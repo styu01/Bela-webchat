@@ -1,0 +1,10 @@
+{
+  "webchat_http.py": "14b2ba095f358cc043ed705e356c2d0ea2800e2c835ddc8f9e88a8240546aae2",
+  "index.html": "3c469ba0db8b28eb1ea09f90ab3643be5d40ddaf2bad2a92ce7b13b17324f9f1",
+  "webchat_worker.py": "f59d420f93e30c58876690a948861dd51f1fbb83611081485c01c4bc1c3c70b4",
+  "webchat_sync_sender.py": "84d16e56852adb23ce97a317ba52843e56ff17b1564dd12fe08577b96ae9c438",
+  "webchat-api-bridge.py": "5a69b5537d8e3a02a687ccc62017f983d52967808b3d7c3f1a68de69f8f4ac68",
+  "webchat_isolation.py": "9dac280589f896e9cfc3ea3410657d917cfb157b1becb5f1d5d20d60f52cde9f",
+  "app.js": "ef3a6664621bf0714aab9ce560e13c7c217824dc5f6ed8eb37cd9429c0a4424e",
+  "webchat_presentation.py": "d5f77c3a6ff0cbfe027b47a5af9a4f3853464391ea4aa9dc0c3b5a62234bf6b6"
+}

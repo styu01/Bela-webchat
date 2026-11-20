@@ -1,0 +1,16 @@
+[Unit]
+Description=Bela Webchat Marveen IPC broker (isolated from Telegram service)
+After=basic.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -B %h/bela-f0-dev/webchat-p2/webchat_bridge_broker.py --service
+WorkingDirectory=%h/bela-f0-dev/webchat-p2
+Restart=on-failure
+RestartSec=3
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

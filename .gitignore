@@ -1,0 +1,45 @@
+# Never commit secrets, local installation state or private conversations.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+.dashboard-token
+*token*.secret
+*credentials*.json
+*secrets*.json
+
+# Local databases, logs, state and backups
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.log
+*.pid
+*.sock
+*.socket
+*.bak
+*.backup
+p597-backup-*/
+p598-backup-*/
+.p598-unified-release.json
+store/
+uploads/
+attachments/
+media/
+*.zip
+
+# Generated files and development tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+node_modules/
+coverage/
+.cache/
+.DS_Store
+Thumbs.db

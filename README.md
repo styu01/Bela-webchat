@@ -72,7 +72,7 @@ python3 -B install_p598.py --rollback
 - [Architektúra és üzenetútvonal](docs/ARCHITEKTURA.md)
 - [Telepítés, átvétel és visszaállítás](docs/TELEPITES.md)
 - [Üzemeltetés és hibakeresés](docs/UZEMELTETES.md)
-- [Hibatesztek, bizonyítékok és korlátok](docs/TESZTELÉS.md)
+- [Hibatesztek, bizonyítékok és korlátok](docs/TESZTELES.md)
 - [Biztonság és titokkezelés](SECURITY.md)
 - [Kiadási változásjegyzék](CHANGELOG_P598_HU.md)
 - [Eredeti részletes kiadási leírás](README_P598_HU.md)

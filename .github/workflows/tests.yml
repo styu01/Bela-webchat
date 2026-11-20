@@ -1,0 +1,45 @@
+name: Release regression tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Bridge tests
+        run: python3 -B test_p597.py
+      - name: Installer tests (isolated mocks)
+        run: python3 -B test_p597_install.py
+      - name: Unified release tests
+        run: python3 -B test_unified_release.py
+      - name: Fault recovery tests (mock subprocesses)
+        run: python3 -B test_fault_recovery.py
+      - name: Frontend syntax and UI regression
+        run: |
+          node --check app.js
+          node test_ui.mjs
+      - name: Release SHA-256 manifest
+        run: |
+          python3 - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          data = json.loads(Path('MANIFEST_SHA256.json').read_text())
+          for path, expected in sorted(data.items()):
+              actual = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+              assert actual == expected, f'Hash mismatch: {path}'
+          print(f'PASS: {len(data)} release file checksums')
+          PY
