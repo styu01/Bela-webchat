@@ -117,6 +117,11 @@ class Projection:
                     item['sync']=sync
                     if sync['state']=='done':item['source']='web+telegram'
         sync_info=dict((r['key'],r['value']) for r in ro(DB,"SELECT key,value FROM webchat_sync_meta"))
+        # Diagnostics are read-only; never depend on Telegram's channel DB.
+        sync_counts={r['state']:r['n'] for r in ro(DB,
+            "SELECT state,COUNT(*) AS n FROM webchat_sync_events GROUP BY state")}
+        last_ok=str(sync_info.get('last_success_at','0'))
+        sync_last_success=int(last_ok) if last_ok.isdigit() else 0
 
         uploads=decorate_uploads(entries,PROJECT)
         out_items=self.files.entries();photolist=self.outphotos.entries()
@@ -136,7 +141,15 @@ class Projection:
         held=sum(j['request_id'] in held_ids and j['state']=='queued' for j in jobs)
         enabled=iso.enabled(DB)
         return {'jobs':jobs,'entries':entries,'queue':{'waiting':waiting,'limit':50,'held':held,'active':running,'blocked':False},
-                'problem':problem,'automatic':enabled,'sync_enabled':sync_info.get('enabled')=='1','sync_problem':sync_info.get('blocked_reason',''),'gallery':sorted(self.gallery+uploads+outgoing,key=lambda e:(e['at'],e['key']),reverse=True)[:20],
+                'problem':problem,'automatic':enabled,'sync_enabled':sync_info.get('enabled')=='1','sync_problem':sync_info.get('blocked_reason',''),
+                'sync_recovery_state':sync_info.get('recovery_state','healthy'),
+                'sync_quarantined':sync_counts.get('uncertain',0)+sync_counts.get('invalid',0),
+                'sync_waiting':sync_counts.get('new',0)+sync_counts.get('ready',0),
+                'sync_retry_at':int(sync_info.get('next_retry_at','0') or '0'),
+                'sync_failure_code':sync_info.get('last_failure_code',''),
+                'sync_last_http_status':sync_info.get('last_http_status','0'),
+                'sync_failure_streak':sync_info.get('failure_streak','0'),
+                'sync_last_confirmed_at':sync_last_success or 0,'gallery':sorted(self.gallery+uploads+outgoing,key=lambda e:(e['at'],e['key']),reverse=True)[:20],
                 'video_gallery':sorted(self.video_gallery+outvideo,key=lambda e:(e['at'],e['key']),reverse=True)[:20],
                 'service':True,'generated_at':int(time.time()),'transport_capacity':None,
                 'session_binding':{'verified':False,'source':'marveen-main-bus','reason':'pilot_requires_live_end_to_end_verification','registry_reason':'not_applicable'}}

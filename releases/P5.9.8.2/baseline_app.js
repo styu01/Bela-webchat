@@ -1,0 +1,286 @@
+'use strict';
+const $=id=>document.getElementById(id);let logged=false,latest=null,lastKey='',busy=false,pending=null,authEpoch=0;
+// P5.8.4.3: long owner text travels as an authenticated private TXT attachment.
+// This does not enlarge the terminal paste or weaken backend queue limits.
+const LONG_INPUT_MAX=5000;
+const LONG_FILE_NAME='bela-webchat-teljes-keres.txt';
+const LONG_REQUEST_MARKER='A teljes keresem a csatolt bela-webchat-teljes-keres.txt fajlban van. Olvasd el es hajtsd vegre.';
+
+// Presentation-only preference; no API requests or queue changes.
+const themeNames=new Set(['light','dark','ocean','cream','peach','slate','midnight','terracotta','cinnabar','sunlight','patina']);
+const themeKey='bela-webchat-theme-v1';
+function setTheme(value,save=false){const theme=themeNames.has(value)?value:(value==='lavender'?'peach':'light');document.documentElement.dataset.theme=theme;$('theme').value=theme;if(save){try{localStorage.setItem(themeKey,theme);}catch{}}}
+let initialTheme='light';try{initialTheme=localStorage.getItem(themeKey)||'light';}catch{}
+setTheme(initialTheme);$('theme').addEventListener('change',e=>setTheme(e.target.value,true));
+const labels={queued:'Feldolgozásra vár',handed_off:'Átadás folyamatban',seen:'Béla feldolgozza',answered:'Válaszolt',unknown:'Bizonytalan – megállítva',failed_unverified:'Sikertelen – nincs újrapróbálás',legacy_75_failed_unverified:'Archiválva – nem indul újra',cancelled_too_long:'Túl hosszú, nem lett elküldve',cancelled_by_user:'Visszavonva – nem lett elküldve',closed:'Tulajdonos lezárta – nincs újraküldés'};
+const workLabels={waiting:'vár',running:'folyamatban',completed:'kész',completed_no_text:'kész, szöveges válasz nincs',uncertain:'sikertelen / nem indul újra'};
+const telegramLabels={waiting:'vár',delivered:'kézbesítve',partial:'részleges',blocked_by_gate:'kapu tiltja',uncertain:'bizonytalan'};
+function progressText(item){
+ const state=item.work_state||({queued:'waiting',handed_off:'running',seen:'running',answered:'completed',unknown:'uncertain',failed_unverified:'uncertain',legacy_75_failed_unverified:'uncertain'})[item.state];
+ if(!state)return '';
+ if(item.webchat_isolated){
+   const sync=item.sync||item.sync_out||item.sync_in;
+   const names={new:'előkészítés alatt',ready:'küldésre vár',done:'kézbesítve',invalid:'elutasítva, ellenőrzés szükséges',uncertain:'nem igazolt – nincs automatikus újraküldés'};
+   const status=sync?(names[sync.state]||sync.state):'korábbi üzenet, nincs visszamenőleges küldés';
+   const parts=sync?.parts?(' ('+sync.confirmed+'/'+sync.parts+' rész)'):'';
+   return 'Munka: '+(workLabels[state]||state)+' · Telegram: '+status+parts;
+ }
+ const tg=item.telegram||{},parts=Array.isArray(tg.parts)?tg.parts:[];
+ const reasons=new Set([...(Array.isArray(tg.anomalies)?tg.anomalies:[]),...parts.flatMap(p=>p?.tool_call_id===null&&!p?.content_ref?[]:Array.isArray(p?.reasons)?p.reasons:[])].filter(x=>typeof x==='string'));
+ const mismatches=parts.filter(p=>Array.isArray(p?.reasons)&&p.reasons.includes('echo_mismatch'));
+ const echoMismatch=reasons.has('echo_mismatch');
+ const accentOnly=echoMismatch&&mismatches.length>0&&mismatches.every(p=>p.echo_difference==='accent_only');
+ const infoCodes=new Set(['echo_mismatch','plain_fallback','document_fallback']);
+ const anomaly=[...reasons].some(x=>!infoCodes.has(x));
+ let projection=telegramLabels[tg.state]||'nincs igazolás';
+ // Accent-only is informational ONLY with both owner delivery receipts and no other problem.
+ const received=role=>parts.some(p=>p?.role===role&&Array.isArray(p.message_ids)&&p.message_ids.length===1&&p.message_ids.every(id=>typeof id==='string'&&/^[1-9][0-9]*$/.test(id)));
+ const onlyAccentParts=parts.every(p=>['echo','answer'].includes(p?.role)&&(p.state==='blocked_by_gate'||p.state==='delivered'||(p.role==='echo'&&p.echo_difference==='accent_only'&&Array.isArray(p.reasons)&&p.reasons.every(x=>x==='echo_mismatch'))));
+ if(accentOnly&&!anomaly&&received('echo')&&received('answer')&&onlyAccentParts&&tg.state==='uncertain')projection='kézbesítve';
+ if(anomaly)projection+=' · küldési anomália';
+ if(reasons.has('plain_fallback'))projection+=' · sima szöveg';
+ if(echoMismatch)projection+=accentOnly?' · ékezet eltér':' · eltérő visszhang';
+ if(tg.state==='partial'&&parts.some(p=>p?.state==='blocked_by_gate'))projection+=' · kapu tiltja';
+ const photos=parts.filter(p=>p?.role==='photo');
+ if(photos.length){const ok=photos.filter(p=>p.state==='delivered'&&Array.isArray(p.message_ids)&&p.message_ids.length===1).length;
+   projection+=' · képek '+ok+'/'+photos.length;
+   if(photos.some(p=>p.media_transport==='document'))projection+=' · nagy kép dokumentumként';
+ }else if(Array.isArray(item.uploads)&&item.uploads.some(u=>u?.image===true))projection+=' · képek nem tükrözve';
+ return 'Munka: '+(workLabels[state]||'bizonytalan')+' · Telegram: '+projection;
+}
+async function api(path,body){const r=await fetch(path,{method:body===undefined?'GET':'POST',credentials:'same-origin',signal:AbortSignal.timeout(15000),headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});if(!r.ok){let detail;try{detail=await r.json();}catch{}const e=new Error(detail?.code==='transport_too_long'?'Túl hosszú, nem lett elküldve. Rövidítsd a kérést.':detail?.code==='dispatch_paused'?'Feldolgozás szünetel; a kérés nem került sorba.':'HTTP '+r.status);e.status=r.status;e.code=detail?.code;throw e;}return r.json();}
+function showLogin(){authEpoch++;latest=null;lastKey='';$('messages').replaceChildren();if($('gallery').open)$('gallery').close();logged=false;$('login').hidden=false;$('workspace').hidden=true;$('logout').hidden=true;$('connection').textContent='Nincs kapcsolat';}
+function showChat(){logged=true;$('login').hidden=true;$('workspace').hidden=false;$('logout').hidden=false;$('connection').textContent='Helyi kapcsolat';}
+function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
+// Safe text-node renderer. Telegram's ledger stores MarkdownV2 wire text;
+// web answers retain their canonical Markdown. Never interpret raw HTML.
+function inline(node,s,tg=false){
+ const re=tg?/\\[\\_\*\[\]\(\)~`>#+\-=|{}.!]|`[^`\n]+`|\*\*[^*\n]+\*\*|\*(?:\\.|[^*\\\n])+\*|__(?:\\.|[^_\\\n])+__|_(?:\\.|[^_\\\n])+_|~(?:\\.|[^~\\\n])+~|\[(?:\\.|[^\]\\\n])+\]\((?:\\.|[^)\\\n])+\)/g:/\\[\\`*_{}\[\]()#+\-.!|>~]|`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_|~~[^~\n]+~~|\[[^\]\n]+\]\([^)\n]+\)/g;
+ let i=0;const unescape=x=>x.replace(/\\([\\_\*\[\]\(\)~`>#+\-=|{}.!])/g,'$1');
+ for(const m of s.matchAll(re)){
+  node.append(document.createTextNode(s.slice(i,m.index)));const v=m[0];
+  if(v.startsWith('\\'))node.append(document.createTextNode(v.slice(1)));
+  else if(v.startsWith('[')){const z=/^\[(.*)\]\((.*)\)$/.exec(v);if(z){let u;try{u=new URL(unescape(z[2]));}catch{}if(u&&['http:','https:'].includes(u.protocol)){const a=el('a',unescape(z[1]));a.href=u.href;a.target='_blank';a.rel='noopener noreferrer';node.append(a);}else node.append(document.createTextNode(unescape(z[1])));}else node.append(document.createTextNode(v));}
+  else {let tag='em',n=1;if(v.startsWith('`'))tag='code';else if(v.startsWith('**')||(!tg&&v.startsWith('__'))){tag='strong';n=2;}else if(tg&&v.startsWith('*'))tag='strong';else if(tg&&v.startsWith('__')){tag='u';n=2;}else if(v.startsWith('~')){tag='s';n=tg?1:2;}node.append(el(tag,unescape(v.slice(n,-n))));}
+  i=m.index+v.length;
+ }
+ node.append(document.createTextNode(s.slice(i)));
+}
+function markdown(text,tg=false){
+ const frag=document.createDocumentFragment();let src=String(text).replace(/\r\n?/g,'\n');
+ // Legacy Telegram messages sometimes have bullets flattened onto one line.
+ if(tg&&!src.includes('```'))src=src.replace(/[ \t]+•[ \t]+/g,'\n• ');
+ const lines=src.split('\n');let i=0;
+ const cells=s=>s.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(x=>x.trim());
+ const bullet=/^\s*(?:[-*•]|\\-)\s+/;const ordered=/^\s*\d+(?:\\?\.|\))\s+/;
+ while(i<lines.length){let l=lines[i];if(!l.trim()){i++;continue;}
+  if(l.startsWith('```')){let a=[];i++;while(i<lines.length&&!lines[i].startsWith('```'))a.push(lines[i++]);if(i<lines.length)i++;const pre=el('pre');pre.append(el('code',a.join('\n')));frag.append(pre);continue;}
+  const h=/^(#{1,6})\s+(.*)$/.exec(l);if(h){const n=el('h'+Math.min(h[1].length,3));inline(n,h[2],tg);frag.append(n);i++;continue;}
+  if(l.includes('|')&&i+1<lines.length&&/^\s*\|?\s*:?-{3,}/.test(lines[i+1])&&cells(lines[i+1]).every(x=>/^:?-{3,}:?$/.test(x))){const t=el('table'),head=el('thead'),tr=el('tr');for(const c of cells(l)){const n=el('th');inline(n,c,tg);tr.append(n);}head.append(tr);t.append(head);i+=2;const b=el('tbody');while(i<lines.length&&lines[i].includes('|')&&lines[i].trim()){const row=el('tr');for(const c of cells(lines[i++])){const n=el('td');inline(n,c,tg);row.append(n);}b.append(row);}t.append(b);const wrap=el('div',undefined,'table-wrap');wrap.append(t);frag.append(wrap);continue;}
+  if(bullet.test(l)||ordered.test(l)){const numbered=ordered.test(l),rx=numbered?ordered:bullet,ul=el(numbered?'ol':'ul');if(numbered){const start=parseInt(l,10);if(Number.isFinite(start))ul.start=start;}while(i<lines.length&&rx.test(lines[i])){const li=el('li');inline(li,lines[i++].replace(rx,''),tg);ul.append(li);}frag.append(ul);continue;}
+  const q=/^\s*(?:>|\\>)\s+(.*)$/.exec(l);if(q){const n=el('blockquote');inline(n,q[1],tg);frag.append(n);i++;continue;}
+  const para=el('p');inline(para,l,tg);frag.append(para);i++;
+ }return frag;
+}
+function bubble(role,text,meta,md=false,tg=false){const b=el('div',undefined,'bubble '+(role==='user'?'user':role==='assistant'?'assistant':''));b.append(el('div',meta,'meta'));if(md||tg){const content=el('div',undefined,'answer-text');content.append(markdown(text,tg));b.append(content);if(md){const c=el('button','Markdown másolása','copy');c.type='button';c.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(text);c.textContent='Másolva';}catch{c.textContent='Nem másolható';}});b.append(c);}}else b.append(el('div',text,'plain-text'));return b;}
+const timeFormat=new Intl.DateTimeFormat('hu-HU',{timeZone:'Europe/Budapest',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+const validUpload=e=>e?.upload?.available===true&&/^[a-f0-9]{32}\.(txt|md|csv|json|pdf|png|jpg|jpeg|webp)$/.test(e.upload.name);
+const validImage=e=>e&&((validUpload(e)&&e.upload.image===true&&/\.(png|jpg|jpeg|webp)$/.test(e.upload.name))||(typeof e.image==='string'&&/^[a-f0-9]{64}\.(jpg|png|webp|gif)$/.test(e.image)));
+const imageURL=e=>validUpload(e)?'/api/preview/uploads/'+e.upload.name:'/api/preview/media/'+e.image;
+const validVideo=e=>e&&typeof e.video==='string'&&/^[a-f0-9]{64}\.(mp4|webm)$/.test(e.video);
+let galleryItems=[],galleryPos=0,galleryMode='photo';
+const galleryDialog=$('gallery');
+function latestPhotos(){return (latest?.gallery||[]).filter(validImage).slice(0,20);}
+function latestVideos(){return (latest?.video_gallery||[]).filter(validVideo).slice(0,20);}
+function paintGallery(){
+ const e=galleryItems[galleryPos];if(!e)return;
+ const video=validVideo(e),name=video?e.video:validUpload(e)?e.upload.name:e.image,url=video?'/api/preview/media/'+name:imageURL(e);
+ const v=$('galleryVideo'),img=$('galleryImage');v.pause();v.removeAttribute('src');v.load();img.removeAttribute('src');
+ v.hidden=!video;img.hidden=video;if(video)v.src=url;else{img.src=url;img.alt='Csatolt kép '+(galleryPos+1);}
+ $('galleryTitle').textContent=video?'Videógaléria':'Képgaléria';$('galleryLatest').textContent=video?'Legutóbbi 20 videó':'Legutóbbi 20 kép';
+ $('galleryCount').textContent=(galleryPos+1)+' / '+galleryItems.length;
+ $('galleryCaption').textContent=e.text||'';
+ $('galleryDownload').href=url+'?download=1';$('galleryDownload').download='bela-'+name;
+ $('galleryPrev').disabled=galleryPos===0;$('galleryNext').disabled=galleryPos===galleryItems.length-1;
+}
+function openGallery(e=null,mode='photo'){
+ galleryMode=validVideo(e)?'video':mode;galleryItems=galleryMode==='video'?latestVideos():latestPhotos();galleryPos=e?galleryItems.findIndex(x=>x.key===e.key):0;
+ if(e&&galleryPos<0){galleryItems=[e];galleryPos=0;}
+ if(!galleryItems.length)return;paintGallery();if(!galleryDialog.open)galleryDialog.showModal();
+}
+function moveGallery(n){galleryPos=Math.max(0,Math.min(galleryItems.length-1,galleryPos+n));paintGallery();}
+$('galleryOpen').addEventListener('click',()=>openGallery());$('galleryLatest').addEventListener('click',()=>openGallery(null,galleryMode));$('videoOpen').addEventListener('click',()=>openGallery(null,'video'));
+$('galleryClose').addEventListener('click',()=>galleryDialog.close());
+$('galleryPrev').addEventListener('click',()=>moveGallery(-1));$('galleryNext').addEventListener('click',()=>moveGallery(1));
+galleryDialog.addEventListener('keydown',e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();moveGallery(e.key==='ArrowLeft'?-1:1);}});
+galleryDialog.addEventListener('click',e=>{if(e.target===galleryDialog)galleryDialog.close();});
+galleryDialog.addEventListener('close',()=>{$('galleryImage').removeAttribute('src');const v=$('galleryVideo');v.pause();v.removeAttribute('src');v.load();galleryItems=[];});
+function render(force=false){
+ if(!latest)return;updateCapacityHint();const jobs=latest.jobs||[],entries=latest.entries||[]; $('galleryOpen').disabled=!latestPhotos().length;$('videoOpen').disabled=!latestVideos().length;
+ $('modeHint').textContent=(latest.automatic?'Feldolgozás engedélyezve · a Küldés sorba állítja a kérést.':'Feldolgozás szünetel · új kérés nem küldhető.')+
+ (latest.sync_enabled?' Telegram-szinkron: bekapcsolva; a visszaigazolt kézbesítést külön jelöljük.':
+ ' Telegram-szinkron: szünetel; a nem igazolt küldéseket nem ismételjük automatikusan.');
+ const waiting=Math.max(jobs.filter(j=>j.state==='queued').length,Number.isInteger(latest.queue?.waiting)?latest.queue.waiting:0);
+ const held=Number.isInteger(latest.queue?.held)?latest.queue.held:0;
+ const stale=Number.isFinite(latest.generated_at)&&Date.now()/1000-latest.generated_at>20;
+ $('send').disabled=busy||!!pending||waiting>=50||stale||!latest.automatic;
+
+ $('queueStatus').textContent=stale?'A Webchat-nézet nem frissült – beküldés szünetel':
+  waiting>=50?'A várakozási sor megtelt (50/50)':
+  (waiting?`Sorban: ${waiting}/50${held?' ('+held+' zárolt, csak kézi felülvizsgálattal)':''} · ${latest.automatic?'feldolgozás engedélyezve':'FELDOLGOZÁS SZÜNETEL — NEM FOGAD ÚJ KÉRÉST'}`:
+  (latest.problem || (jobs.length?progressText(jobs.at(-1)):(latest.automatic?'Készen áll':'Feldolgozás szünetel · beküldés letiltva'))));
+ const current=jobs.find(j=>j.state!=='answered')||jobs[jobs.length-1];
+ if(current&&progressText(current))$('queueStatus').textContent+=' · '+progressText(current);
+ const key=JSON.stringify([entries,latest.problem,latest.sync_enabled,latest.sync_problem]);if(!force&&key===lastKey)return;lastKey=key;
+ const m=$('messages');if(!force&&Array.from(m.querySelectorAll('video')).some(v=>!v.paused&&!v.ended)){lastKey='';return;}const atBottom=m.scrollHeight-m.scrollTop-m.clientHeight<90,oldTop=m.scrollTop;
+ m.replaceChildren();
+ for(const e of entries){
+  const source=e.source==='web+telegram'?'Web + Telegram':e.source==='telegram'?'Telegram-napló':'Web';
+  const time=Number.isFinite(e.at)?timeFormat.format(new Date(e.at*1000)):'';
+  let meta=(e.role==='user'?'Te':e.role==='status'?'Állapot':'Béla')+' · '+source+(time?' · '+time:'');
+  if(e.role==='user'&&e.state)meta+=' · '+(labels[e.state]||e.state);
+  if(e.role==='user'&&e.state==='queued'){
+   const job=jobs.find(j=>e.key==='w:'+j.request_id+':in');
+   if(job&&Number.isInteger(job.queue_position))meta+=' · '+job.queue_position+'. a sorban';
+  }
+  if(progressText(e))meta+=' · '+progressText(e);
+  if(e.answer_source==='telegram')meta+=' · Telegram-válasz (eredeti webes Markdown nincs)';
+  if(e.markdown&&e.source!=='web+telegram'&&e.delivery?.confirmed)meta+=e.delivery.same_markdown?' · Telegram-küldés igazolt':' · Telegram-formátum külön';
+  const reasonNames={quota:'Claude-keret elérhetetlen',auth:'Claude-hitelesítési hiba',timeout:'Időtúllépés',empty_result:'Üres Claude-válasz',cli_failure:'Claude-hívási hiba',invalid_result:'Érvénytelen Claude-kimenet',invalid_request:'Érvénytelen kérés',internal:'Belső feldolgozási hiba',unverified:'Ellenőrizetlen hiba'};
+  const text=e.role==='status'?(e.state==='failed_unverified'?(labels[e.state]+' · '+(reasonNames[e.failure_code]||'Kézi ellenőrzés szükséges')):(labels[e.state]||e.state)):(e.text|| (e.attachment?'[Csatolmány: '+e.attachment+']':'[Üres naplóbejegyzés]'));
+  const b=bubble(e.answer_source==='no_text'?'status':e.role,text,meta,e.markdown===true,e.telegram_format===true);
+  if(e.role==='user'&&e.source.startsWith('web')&&e.state==='queued'&&/^w:[a-f0-9-]{36}:in$/.test(e.key)){
+   const id=e.key.slice(2,-3),btn=el('button','Várakozó kérés törlése','copy');btn.type='button';
+   btn.addEventListener('click',async()=>{
+    if(!confirm('Biztosan visszavonod ezt a még el nem indított kérést?'))return;
+    btn.disabled=true;
+    try{await api('/api/preview/queue/cancel',{request_id:id});$('notice').textContent='Várakozó kérés visszavonva.';await refresh();}
+    catch(err){$('notice').textContent='Törlés nem sikerült: '+err.message;btn.disabled=false;}
+   });
+   b.append(btn);
+  }
+  if(e.uploads){
+   const panel=el('div',undefined,'sent-attachments');for(const u of e.uploads){const item={...e,key:e.key+':'+u.name,upload:u};if(validImage(item)){const a=el('button',undefined,'photo-link web-upload-image');a.type='button';a.title=u.display_name||'Kép nagyítása';a.addEventListener('click',()=>openGallery(item));const img=el('img');img.src=imageURL(item);img.alt=u.display_name||'Csatolt kép';img.loading='lazy';a.append(img);panel.append(a);}else if(validUpload(item)){const dl=el('a',u.display_name||'Csatolt fájl','upload-file');dl.href='/api/preview/uploads/'+u.name+'?download=1';dl.download=u.display_name||'bela-'+u.name;panel.append(dl);}else panel.append(el('span',(u.display_name||'Fájl')+' – nem elérhető','photo-missing'));}if(!e.uploads.length)panel.append(el('div','A csatolmányjegyzék nem érhető el.','photo-missing'));b.insertBefore(panel,b.children[1]);
+  }else if(validImage(e)){
+
+   const a=el('button',undefined,'photo-link'+(validUpload(e)?' web-upload-image':''));a.type='button';a.setAttribute('aria-label','Kép nagyítása');a.addEventListener('click',()=>openGallery(e));
+   const img=el('img');img.src=imageURL(e);img.alt=validUpload(e)?'Feltöltött kép':'Telegramon küldött kép';img.loading='lazy';img.decoding='async';a.append(img);b.insertBefore(a,b.children[1]);
+   img.addEventListener('error',()=>{a.replaceWith(el('div','A kép jelenleg nem elérhető.','photo-missing'));});
+  }else if(validUpload(e)){const dl=el('a','Csatolt '+e.upload.name.split('.').pop().toUpperCase()+' fájl · Letöltés','upload-file');dl.href='/api/preview/uploads/'+e.upload.name+'?download=1';dl.download='bela-'+e.upload.name;b.insertBefore(dl,b.children[1]);
+  }else if(e.upload){b.insertBefore(el('div','A csatolt fájl nem elérhető.','photo-missing'),b.children[1]);
+  }else if(validVideo(e)){
+   const panel=el('div',undefined,'video-panel'),v=el('video');v.controls=true;v.playsInline=true;v.preload='metadata';v.src='/api/preview/media/'+e.video;panel.append(v);
+   const btn=el('button','Videó nagyítása','copy');btn.type='button';btn.addEventListener('click',()=>{v.pause();openGallery(e,'video');});panel.append(btn);
+   const dl=el('a','Letöltés','copy');dl.href=v.src+'?download=1';dl.download='bela-'+e.video;panel.append(dl);b.insertBefore(panel,b.children[1]);
+   v.addEventListener('error',()=>panel.append(el('div','A videó nem játszható le ebben a böngészőben. Próbáld letölteni.','photo-missing')));
+  }else if(e.video_state)b.insertBefore(el('div',e.video_state==='loading'?'Videó előkészítése…':'A videó helyi másolata nem érhető el (hiányzó fájl vagy méretkorlát).','photo-missing'),b.children[1]);
+  else if(e.attachment_file&&/^[a-f0-9]{64}\.[a-z0-9]{1,12}$/.test(e.attachment_file)&&e.attachment_state==='ready'){
+   const label=String(e.attachment_name||'Elküldött dokumentum').slice(0,180);
+   const kb=Number.isFinite(e.attachment_bytes)?' ('+Math.ceil(e.attachment_bytes/1024)+' KB)':'';
+   const dl=el('a','📎 '+label+kb+' · Letöltés','upload-file');
+   dl.href='/api/preview/media/'+e.attachment_file+'?download=1';dl.download=label;
+   b.insertBefore(dl,b.children[1]);
+  }else if(e.attachment_state)b.insertBefore(el('div',e.attachment_state==='loading'?'Fájl biztonságos átvétele…':'A fájl másolata nem érhető el (méretkorlát, hiányzó forrás vagy biztonsági ellenőrzés).','photo-missing'),b.children[1]);
+  else if(e.attachment==='photo')b.insertBefore(el('div','A kép helyi fájlja nem elérhető.','photo-missing'),b.children[1]);
+  m.append(b);
+ }
+ if(!m.children.length)m.append(el('div','Még nincs megjeleníthető üzenet.','empty'));
+ m.scrollTop=atBottom||force?m.scrollHeight:oldTop;
+}
+let refreshing=false;
+async function refresh(){if(refreshing)return;refreshing=true;const epoch=authEpoch;try{const data=await api('/api/preview/timeline');if(epoch!==authEpoch)return;latest=data;if(!logged)showChat();$('connection').textContent='Helyi kapcsolat';if(pending&&[...(latest.jobs||[]),...(latest.entries||[])].some(j=>j.request_id===pending.id||j.key==='w:'+pending.id+':in')){pending=null;$('notice').textContent='';}render();}catch(e){if(epoch!==authEpoch)return;if(e.status===401)showLogin();else $('connection').textContent='Kapcsolati hiba';}finally{refreshing=false;}}
+$('loginForm').addEventListener('submit',async e=>{e.preventDefault();try{await api('/api/auth/login',{username:'preview-owner',password:$('password').value});$('password').value='';$('loginError').textContent='';showChat();await refresh();}catch{$('loginError').textContent='Sikertelen belépés.';}});
+$('logout').addEventListener('click',async()=>{authEpoch++;logged=false;clearAttachment();try{await api('/api/auth/logout',{});}finally{latest=null;lastKey='';$('messages').replaceChildren();showLogin();}});
+let attachments=[];
+const allowedExt=new Set(['txt','md','csv','json','pdf','png','jpg','jpeg','webp']);
+function paintAttachments(){const list=$('attachmentList');list.replaceChildren();$('attachName').textContent=attachments.length?attachments.length+' / 20 fájl':'';$('removeAttach').hidden=!attachments.length;for(const a of attachments){const card=el('div',undefined,'attach-card');if(a.preview){const img=el('img');img.src=a.preview;img.alt=a.file.name;card.append(img);}card.append(el('span',a.file.name+' ('+Math.ceil(a.file.size/1024)+' KB)'));const x=el('button','×');x.type='button';x.setAttribute('aria-label',a.file.name+' eltávolítása');x.addEventListener('click',()=>{if(busy||pending)return;if(a.preview)URL.revokeObjectURL(a.preview);attachments=attachments.filter(z=>z!==a);paintAttachments();});card.append(x);list.append(card);}if(typeof updateCapacityHint==='function')updateCapacityHint();}
+function clearAttachment(){for(const a of attachments)if(a.preview)URL.revokeObjectURL(a.preview);attachments=[];$('attachment').value='';paintAttachments();}
+$('attach').addEventListener('click',()=>{if(!busy&&!pending)$('attachment').click();});
+$('removeAttach').addEventListener('click',()=>{if(!busy&&!pending)clearAttachment();});
+function addAttachments(files){if(busy||pending)return;const selected=files.map(file=>({file,ext:file.name.split('.').pop().toLowerCase()}));if(attachments.length+selected.length>20){$('notice').textContent='Legfeljebb 20 fájlt csatolhatsz.';return;}if(selected.some(a=>!allowedExt.has(a.ext)||a.file.size<1||a.file.size>30*1024*1024)){$('notice').textContent='Nem támogatott fájl vagy méret (max. 30 MB/fájl).';return;}for(const a of selected){if(['png','jpg','jpeg','webp'].includes(a.ext))a.preview=URL.createObjectURL(a.file);attachments.push(a);}paintAttachments();$('notice').textContent='';}
+$('attachment').addEventListener('change',()=>{const files=Array.from($('attachment').files);$('attachment').value='';addAttachments(files);});
+// Native clipboard paste: no clipboard permission prompt; only user paste events.
+// Do not intercept normal text paste or clipboard events outside the composer.
+$('text').addEventListener('paste',e=>{
+ const data=e.clipboardData;if(!data)return;
+ const types={'image/png':'png','image/jpeg':'jpg','image/webp':'webp'};
+ let images=Array.from(data.items||[]).filter(x=>x.kind==='file'&&types[x.type]).map(x=>x.getAsFile()).filter(Boolean);
+ if(!images.length)images=Array.from(data.files||[]).filter(x=>types[x.type]);
+ if(!images.length)return;
+ e.preventDefault();if(busy||pending){$('notice').textContent='A jelenlegi kérés még folyamatban van.';return;}
+ const stamp=Date.now();const files=images.map((f,i)=>new File([f],'kepernyokep-'+stamp+'-'+(i+1)+'.'+types[f.type],{type:f.type}));
+ addAttachments(files);
+});
+
+async function uploadFile(a){if(a.path)return a.path;const r=await fetch('/api/preview/upload',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/octet-stream','X-Bela-Extension':a.ext},body:a.file});if(!r.ok)throw Error('Feltöltési hiba: HTTP '+r.status);const x=await r.json();if(typeof x.path!=='string'||!/^\/[^\r\n]+\/uploads\/[a-f0-9]{32}\.(txt|md|csv|json|pdf|png|jpg|jpeg|webp)$/.test(x.path))throw Error('Érvénytelen fájlazonosító');a.path=x.path;return x.path;}
+// Match Python json.dumps(..., ensure_ascii=True) string transport, including
+// surrogate pairs. Capacity metadata comes from the worker's real prompt builder.
+function transportSize(text,withFiles,capacity,useLong=false){
+ if(!capacity||!Number.isFinite(capacity.limit))return null;
+ const overhead=useLong?capacity.long_batch_overhead:withFiles?capacity.batch_overhead:capacity.plain_overhead;
+ if(!Number.isFinite(overhead))return null;
+ const ascii=JSON.stringify(text).replace(/[\u007f-\uffff]/g,c=>'\\u'+c.charCodeAt(0).toString(16).padStart(4,'0'));
+ return {used:overhead+ascii.length-2,limit:capacity.limit};
+}
+function needsLongFile(text,hasFiles,capacity){
+ const direct=transportSize(text,hasFiles,capacity);
+ return text.length>(hasFiles?580:800)||!!(direct&&direct.used>direct.limit);
+}
+function currentTransportSize(){
+ const text=$('text').value.trim()||(attachments.length?'Olvasd el a csatolt fájlokat, és foglald össze.':'');
+ const long=needsLongFile(text,attachments.length>0,latest?.transport_capacity);
+ return transportSize(long?LONG_REQUEST_MARKER:text,attachments.length>0||long,latest?.transport_capacity,long);
+}
+function updateCapacityHint(){
+ const hint=$('capacityHint');if(!hint)return;
+ const text=$('text').value.trim(),c=currentTransportSize();
+ const long=needsLongFile(text,attachments.length>0,latest?.transport_capacity);
+ const count=text.length+' / '+LONG_INPUT_MAX+' karakter';
+ const info=long?' · A teljes kérés automatikusan privát TXT-csatolmányként kerül átadásra.':' · Közvetlen terminál-átadás.';
+ const capacityInfo=c?' · Terminál: '+c.used+' / '+c.limit+' átadási karakter.':' · Terminálkapacitás nem ismert.';
+ hint.textContent=count+info+capacityInfo+(c&&c.used>c.limit?' A rövid átvivő üzenet sem fér el, nem küldhető.':'');
+}
+$('text').addEventListener('input',updateCapacityHint);
+$('text').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&e.keyCode!==229){e.preventDefault();if(!$('send').disabled)$('composer').requestSubmit();}});
+// Only real interaction renews idle time. Background polling does not.
+let lastActivity=0,activityTimer;function pingActivity(){if(!logged)return;lastActivity=Date.now();const epoch=authEpoch;api('/api/preview/activity',{}).catch(e=>{if(e.status===401&&epoch===authEpoch)showLogin();});}function activity(e){if(!logged||!e.isTrusted)return;clearTimeout(activityTimer);if(Date.now()-lastActivity>=15000)pingActivity();else{const epoch=authEpoch;activityTimer=setTimeout(()=>{if(epoch===authEpoch)pingActivity();},15000-(Date.now()-lastActivity));}}
+for(const type of ['pointerdown','keydown','wheel','touchstart'])document.addEventListener(type,activity,{passive:true});
+$('composer').addEventListener('submit',async e=>{
+ e.preventDefault();if(busy||pending||!latest||!latest.automatic||(latest.queue?.waiting??0)>=50)return;
+ let text=$('text').value.trim(),files=attachments.slice();
+ if(!text&&!files.length)return;if(!text)text='Olvasd el a csatolt fájlokat, és foglald össze.';
+ if(text.length>LONG_INPUT_MAX||/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f]/u.test(text)){$('notice').textContent='A kérés legfeljebb 5000 karakter lehet, vezérlőkarakterek nélkül.';return;}
+ const long=needsLongFile(text,files.length>0,latest?.transport_capacity);
+ if(long){
+   if(files.some(a=>a.file.name===LONG_FILE_NAME)){$('notice').textContent='A fenntartott fájlnév már csatolva van; nevezd át a saját fájlt.';return;}
+   if(files.length>=20){$('notice').textContent='A hosszú kérés egy privát TXT-fájlnak számít. Távolíts el egy csatolmányt (max. 20).';return;}
+   files.push({file:new File([text],LONG_FILE_NAME,{type:'text/plain'}),ext:'txt'});
+   text=LONG_REQUEST_MARKER;
+ }
+ const transport=transportSize(text,files.length>0,latest?.transport_capacity,long);
+ if(transport&&transport.used>transport.limit){$('notice').textContent='A rövid átvivő üzenet sem fér el a terminálon; a kérés nem lett elküldve.';return;}
+ busy=true;render();
+ try{
+  if(files.length){const items=[];for(let i=0;i<files.length;i++){$('notice').textContent='Fájl feltöltése: '+(i+1)+' / '+files.length;const path=await uploadFile(files[i]);items.push({id:path.split('/').pop(),name:files[i].file.name});}const batch=await api('/api/preview/batch',{files:items});if(typeof batch.path!=='string'||!/^\/[^\r\n]+\/uploads\/[a-f0-9]{32}\.json$/.test(batch.path))throw Error('Érvénytelen jegyzék');text+='\nCsatolt fajlok jegyzeke: '+batch.path;if(text.length>800)throw Error('A teljes kérés túl hosszú.');}
+  pending={id:crypto.randomUUID(),text};
+  const receipt=await api('/api/chat/f0/requests',{request_id:pending.id,text});
+  if(receipt?.request_id!==pending.id||!['queued','handed_off','seen','answered','unknown','failed_unverified','legacy_75_failed_unverified'].includes(receipt?.state))throw Error('Beküldési nyugta nem igazolható');
+  pending=null;$('text').value='';clearAttachment();$('notice').textContent=long?'A teljes kérés TXT-csatolmányként sorba állítva.':'Kérés sorban áll.';await refresh();
+ }catch(e){
+  if(e.code==='dispatch_paused'){pending=null;$('notice').textContent=e.message;}
+  else if(!pending){$('notice').textContent=e.message;}
+  else if(e.status&&e.status<500&&e.status!==404){
+   pending=null;$('notice').textContent='Kérés elutasítva: '+e.message;
+  }else{
+   // Read-only verification with the SAME UUID. Do not repeat POST ingestion.
+   try{
+    const status=await api('/api/preview/queue/status',{request_id:pending.id});
+    if(status.request_id===pending.id&&['queued','handed_off','seen','answered','unknown','failed_unverified','legacy_75_failed_unverified'].includes(status.state)){
+     pending=null;$('text').value='';clearAttachment();
+     $('notice').textContent='A kérés a szerveren rögzítve ('+status.state+'). Nincs újraküldés.';
+    }else $('notice').textContent='A beküldés nem igazolható. Ne küldd újra.';
+   }catch{$('notice').textContent='A beküldés eredménye bizonytalan. Ne küldd újra; ellenőrizd a terminált.';}
+  }
+ }finally{busy=false;render();}
+});
+refresh();setInterval(()=>{if(logged)refresh();},1800);

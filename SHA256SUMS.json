@@ -1,0 +1,18 @@
+{
+  "webchat_sync_sender.py": "d18cd0bf94eaba626543f0af3f1b79586fcdec479be4dbe67749a77ec637b3b8",
+  "webchat_http.py": "90d1a32f787f3d873fd9ef3a827f87e20ef44a9979b7f73306c9c54f8ca226e5",
+  "app.js": "31ae61bc5b2b9db7e42beecad725a3ec5982f84e057f209193d5ecb36d2cc4bd",
+  "install_p5983.py": "2810a0f22899b50b465e0fa228162ecafdf0dd8c7e2ff91808f32a7273729dec",
+  "test_mirror_recovery.py": "304754376bf4747de093da36aea506a9180577088b59c33718cdd78b60c40322",
+  "test_installer_p5983.py": "e5e7ef75aecdf10a1af35e4c74caa96889cf27f7a80cc3341f52146c58184416",
+  "test_ui_p5983.mjs": "779e13d041e4103d79273cd5806b7a859d9383c1f0ad8418eb43ecbcf37223cd",
+  "webchat_isolation.py": "9dac280589f896e9cfc3ea3410657d917cfb157b1becb5f1d5d20d60f52cde9f",
+  "webchat_presentation.py": "d5f77c3a6ff0cbfe027b47a5af9a4f3853464391ea4aa9dc0c3b5a62234bf6b6",
+  "test-fixtures/base/webchat_sync_sender.py": "84d16e56852adb23ce97a317ba52843e56ff17b1564dd12fe08577b96ae9c438",
+  "test-fixtures/base/webchat_http.py": "2ad75793a634d16aa5a7ae94f07799b0bf948cd6b60b9037dc6f2597a5067706",
+  "test-fixtures/base/app.js": "0612ee6f1a51a4c22d013db862c05e72fba2f93b84867187ec11c001838bd058",
+  "TELEPITES_P5983_HU.md": "0bae2c5df18e69727095527452181d4207e5808201d0f8fd70dcf536fd29879c",
+  "TESZTJELENTES_P5983_HU.md": "c9c8801c37a93263fd2bb8436060172fd109dc6ab396489f1c923903c61b04bc",
+  "KIADAS_P5983.md": "6d4f768a6e64597ca7c2cd0dc3b6f5b8ab81fceeda712c565019dea76fb8bfea",
+  "baseline_app.js": "ef3a6664621bf0714aab9ce560e13c7c217824dc5f6ed8eb37cd9429c0a4424e"
+}

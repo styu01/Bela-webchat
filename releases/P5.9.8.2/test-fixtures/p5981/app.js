@@ -1,0 +1,394 @@
+'use strict';
+const $=id=>document.getElementById(id);let logged=false,latest=null,lastKey='',busy=false,pending=null,authEpoch=0,trackedSubmission=null;
+// P5.8.4.3: long owner text travels as an authenticated private TXT attachment.
+// This does not enlarge the terminal paste or weaken backend queue limits.
+const LONG_INPUT_MAX=5000;
+const LONG_FILE_NAME='bela-webchat-teljes-keres.txt';
+const LONG_REQUEST_MARKER='A teljes keresem a csatolt bela-webchat-teljes-keres.txt fajlban van. Olvasd el es hajtsd vegre.';
+
+// Presentation-only preference; no API requests or queue changes.
+const themePresets={
+ light:{bg:'#eef3f8',bgSoft:'#f7f9fc',surface:'#ffffff',surfaceAlt:'#f6f8fb',sidebar:'#f1f5f9',text:'#1f2937',muted:'#5f6b7a',border:'#d7e0ea',accent:'#168c6d',accentText:'#ffffff',accentSoft:'#d9f4eb',userBubble:'#e7f5ee',assistantBubble:'#ffffff',statusBubble:'#f6eee4',pill:'#edf2f7',input:'#ffffff'},
+ dark:{bg:'#0f172a',bgSoft:'#111827',surface:'#172033',surfaceAlt:'#1f2937',sidebar:'#111827',text:'#e5edf7',muted:'#9aa8bf',border:'#2c3b52',accent:'#4fd1b5',accentText:'#08201c',accentSoft:'#153e37',userBubble:'#13332e',assistantBubble:'#172033',statusBubble:'#3c2f24',pill:'#1f2937',input:'#111827'},
+ ocean:{bg:'#edf7fb',bgSoft:'#f5fbfd',surface:'#ffffff',surfaceAlt:'#eef7fb',sidebar:'#dff2f9',text:'#15324a',muted:'#527088',border:'#b8dae8',accent:'#0e7490',accentText:'#ffffff',accentSoft:'#d5eef6',userBubble:'#d9f1ef',assistantBubble:'#ffffff',statusBubble:'#e8f4fa',pill:'#d9ecf6',input:'#ffffff'},
+ cream:{bg:'#fbf7f0',bgSoft:'#fffaf4',surface:'#fffdf9',surfaceAlt:'#f7efe2',sidebar:'#f3eadf',text:'#3d3127',muted:'#7a6658',border:'#dfd0bf',accent:'#a66c3a',accentText:'#ffffff',accentSoft:'#f2e4d4',userBubble:'#efe6d8',assistantBubble:'#fffdf9',statusBubble:'#f6ecdc',pill:'#efe3d3',input:'#fffdfa'},
+ peach:{bg:'#fff5f1',bgSoft:'#fff9f7',surface:'#ffffff',surfaceAlt:'#fff1eb',sidebar:'#ffe8de',text:'#4a2c2a',muted:'#8a625f',border:'#f0cfc3',accent:'#dd6b4d',accentText:'#ffffff',accentSoft:'#ffe2d9',userBubble:'#ffe8e0',assistantBubble:'#ffffff',statusBubble:'#fff2e6',pill:'#ffe8df',input:'#ffffff'},
+ slate:{bg:'#edf1f4',bgSoft:'#f7f9fb',surface:'#ffffff',surfaceAlt:'#eef2f5',sidebar:'#e3e8ee',text:'#243341',muted:'#607181',border:'#cad5df',accent:'#4a6b8a',accentText:'#ffffff',accentSoft:'#dde7f0',userBubble:'#e5edf4',assistantBubble:'#ffffff',statusBubble:'#edf1f4',pill:'#e3e8ee',input:'#ffffff'},
+ midnight:{bg:'#0b1020',bgSoft:'#11172a',surface:'#151d33',surfaceAlt:'#1d2740',sidebar:'#0f172a',text:'#edf4ff',muted:'#9fb1c9',border:'#2b3959',accent:'#5fa8ff',accentText:'#08101f',accentSoft:'#173154',userBubble:'#16324d',assistantBubble:'#151d33',statusBubble:'#352943',pill:'#1d2740',input:'#0f172a'},
+ terracotta:{bg:'#f6efe9',bgSoft:'#fcf7f4',surface:'#fffdfb',surfaceAlt:'#f5e8de',sidebar:'#efe0d5',text:'#3f2a24',muted:'#7f665e',border:'#dbc4b7',accent:'#b1603d',accentText:'#ffffff',accentSoft:'#f0d9cd',userBubble:'#eedad1',assistantBubble:'#fffdfb',statusBubble:'#f4e6d8',pill:'#ecddd3',input:'#fffdfb'},
+ cinnabar:{bg:'#f8f1ef',bgSoft:'#fdf9f8',surface:'#ffffff',surfaceAlt:'#f7e8e6',sidebar:'#f0dcda',text:'#432626',muted:'#8a6161',border:'#dfbcbc',accent:'#b44436',accentText:'#ffffff',accentSoft:'#f4d5cf',userBubble:'#f1d8d4',assistantBubble:'#ffffff',statusBubble:'#f6e8e2',pill:'#f0e1dd',input:'#ffffff'},
+ sunlight:{bg:'#fff9ec',bgSoft:'#fffdf7',surface:'#ffffff',surfaceAlt:'#fff3d3',sidebar:'#ffefbf',text:'#4a3a16',muted:'#867042',border:'#f0d998',accent:'#d59a00',accentText:'#3e2c00',accentSoft:'#ffefbf',userBubble:'#fff1c7',assistantBubble:'#ffffff',statusBubble:'#fff5de',pill:'#fff0cb',input:'#fffef9'},
+ patina:{bg:'#eef5f3',bgSoft:'#f8fbfa',surface:'#ffffff',surfaceAlt:'#e4efec',sidebar:'#d6e7e2',text:'#1e3b3a',muted:'#5b7d7a',border:'#bcd3cd',accent:'#2f7f77',accentText:'#ffffff',accentSoft:'#d6ece7',userBubble:'#dff0ea',assistantBubble:'#ffffff',statusBubble:'#e8f2ef',pill:'#dcebe7',input:'#ffffff'}
+};
+const themeFields=[
+ {key:'bg',label:'Oldal háttér'},{key:'bgSoft',label:'Másodlagos háttér'},{key:'surface',label:'Kártya / panel'},{key:'surfaceAlt',label:'Másodlagos panel'},{key:'sidebar',label:'Oldalsáv'},{key:'text',label:'Fő szöveg'},{key:'muted',label:'Másodlagos szöveg'},{key:'border',label:'Szegély'},{key:'accent',label:'Kiemelés / gomb'},{key:'accentText',label:'Kiemelés szövege'},{key:'accentSoft',label:'Halvány kiemelés'},{key:'userBubble',label:'Saját buborék'},{key:'assistantBubble',label:'Béla buborék'},{key:'statusBubble',label:'Státusz buborék'},{key:'pill',label:'Állapot címke'},{key:'input',label:'Beviteli mező'}
+];
+const themeNames=new Set([...Object.keys(themePresets),'custom']);
+const themeKey='bela-webchat-theme-v2';
+const customThemeKey='bela-webchat-custom-theme-v1';
+const lastBuiltinThemeKey='bela-webchat-theme-last-builtin-v1';
+const customizerCSS=`
+:root{--bg:#eef3f8;--bgSoft:#f7f9fc;--surface:#ffffff;--surfaceAlt:#f6f8fb;--sidebar:#f1f5f9;--text:#1f2937;--muted:#5f6b7a;--border:#d7e0ea;--accent:#168c6d;--accentText:#ffffff;--accentSoft:#d9f4eb;--userBubble:#e7f5ee;--assistantBubble:#ffffff;--statusBubble:#f6eee4;--pill:#edf2f7;--input:#ffffff;--shadow:0 16px 40px rgba(15,23,42,.16);}
+body{background:var(--bg)!important;color:var(--text)!important;}
+header,.login,.chat,dialog{background:var(--surface)!important;color:var(--text)!important;border-color:var(--border)!important;}
+aside{background:var(--sidebar)!important;color:var(--text)!important;border-color:var(--border)!important;}
+.note,.attachbar,.compose textarea,.compose button,.pill,.tab,.empty,.copy,.upload-file,.photo-missing,.gallery-head,.gallery-foot,#galleryCaption,button,input,select,textarea{border-color:var(--border)!important;}
+.note,.attachbar,#galleryCaption{background:var(--surfaceAlt)!important;color:var(--muted)!important;}
+button,input,select,textarea{background:var(--input)!important;color:var(--text)!important;}
+button:hover,select:hover,input:hover,textarea:hover{filter:brightness(.99);}
+button.primary,#send,#logout,#themeCustomizeToggle,.gallery-download{background:var(--accent)!important;color:var(--accentText)!important;border-color:var(--accent)!important;}
+a,.copy,.upload-file{color:var(--accent)!important;}
+header .logo{background:var(--accent)!important;color:var(--accentText)!important;}
+#queueStatus,.pill{background:var(--pill)!important;color:var(--text)!important;}
+.tab.active{background:var(--accentSoft)!important;color:var(--text)!important;}
+.bubble{background:var(--surface)!important;color:var(--text)!important;border-color:var(--border)!important;}
+.bubble.user{background:var(--userBubble)!important;}
+.bubble.assistant{background:var(--assistantBubble)!important;}
+.bubble:not(.user):not(.assistant){background:var(--statusBubble)!important;}
+.meta,small,#viewHint,#modeHint,#capacityHint,#notice,#connection,.theme-summary,.theme-customizer-lead,.theme-row small{color:var(--muted)!important;}
+#messages,main{background:transparent!important;}
+#text,#password,#attachmentList,.gallery-media{background:var(--input)!important;}
+dialog{box-shadow:var(--shadow)!important;}
+.theme-controls{display:flex;gap:.55rem;align-items:center;flex-wrap:wrap;}
+.theme-picker{display:flex;flex-direction:column;gap:.35rem;align-items:flex-end;}
+.theme-summary{font-size:.8rem;text-align:right;max-width:24rem;}
+.theme-customizer{position:fixed;top:0;right:0;width:min(430px,94vw);height:100vh;overflow:auto;z-index:40;background:var(--surface);color:var(--text);border-left:1px solid var(--border);box-shadow:var(--shadow);padding:1rem 1rem 1.25rem;}
+.theme-customizer[hidden]{display:none!important;}
+body.theme-panel-open::before{content:'';position:fixed;inset:0;background:rgba(15,23,42,.28);z-index:39;}
+.theme-customizer-head{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;margin-bottom:.5rem;}
+.theme-customizer-head strong{font-size:1.05rem;}
+.theme-fields{display:grid;gap:.75rem;margin:1rem 0;}
+.theme-row{display:grid;grid-template-columns:minmax(0,1fr) 56px 108px;gap:.65rem;align-items:center;padding:.65rem;border:1px solid var(--border);border-radius:14px;background:var(--surfaceAlt);}
+.theme-row label{font-weight:600;display:block;}
+.theme-row input[type=color]{width:100%;height:42px;padding:.2rem;border-radius:10px;cursor:pointer;background:var(--input);}
+.theme-row input[type=text]{width:100%;font:inherit;padding:.6rem .7rem;border-radius:10px;}
+.theme-actions{display:flex;gap:.6rem;flex-wrap:wrap;justify-content:flex-end;margin-top:1rem;}
+.theme-actions button{min-height:40px;}
+.theme-indicator{display:inline-flex;align-items:center;gap:.45rem;padding:.2rem .55rem;border-radius:999px;background:var(--accentSoft);color:var(--text);font-size:.78rem;font-weight:600;}
+.theme-indicator::before{content:'';width:.8rem;height:.8rem;border-radius:50%;background:var(--accent);display:inline-block;box-shadow:0 0 0 2px var(--surface);}
+@media (max-width:980px){.theme-picker{align-items:stretch}.theme-summary{text-align:left}.theme-row{grid-template-columns:minmax(0,1fr) 52px 96px;}}
+@media (max-width:640px){.theme-row{grid-template-columns:1fr}.theme-actions{justify-content:stretch}.theme-actions button{flex:1 1 100%}}
+`;
+function injectThemeCSS(){if(document.getElementById('theme-customizer-style'))return;const style=document.createElement('style');style.id='theme-customizer-style';style.textContent=customizerCSS;document.head.append(style);}
+injectThemeCSS();
+function normalizeThemeColor(value,fallback){const m=String(value||'').trim().match(/^#?([0-9a-fA-F]{6})$/);return m?('#'+m[1].toLowerCase()):(fallback||'#000000');}
+function clonePalette(name){const base=themePresets[name]||themePresets.light;return Object.fromEntries(themeFields.map(f=>[f.key,normalizeThemeColor(base[f.key],themePresets.light[f.key])]));}
+function sanitizePalette(candidate,baseName='light'){const base=clonePalette(baseName),src=candidate&&typeof candidate==='object'?candidate:{};for(const field of themeFields)base[field.key]=normalizeThemeColor(src[field.key],base[field.key]);return base;}
+function loadCustomPalette(){try{return sanitizePalette(JSON.parse(localStorage.getItem(customThemeKey)||'{}'),localStorage.getItem(lastBuiltinThemeKey)||'light');}catch{return sanitizePalette({},localStorage.getItem(lastBuiltinThemeKey)||'light');}}
+function saveCustomPalette(palette){try{localStorage.setItem(customThemeKey,JSON.stringify(sanitizePalette(palette,localStorage.getItem(lastBuiltinThemeKey)||'light')));}catch{}}
+function activeBuiltinTheme(){try{const stored=localStorage.getItem(lastBuiltinThemeKey)||'light';return themePresets[stored]?stored:'light';}catch{return'light';}}
+function applyPalette(palette){const clean=sanitizePalette(palette,activeBuiltinTheme());for(const field of themeFields)document.documentElement.style.setProperty('--'+field.key,clean[field.key]);}
+function currentPalette(){if(($('theme')?.value)==='custom')return loadCustomPalette();const selected=$('theme')?.value;return clonePalette(themePresets[selected]?selected:'light');}
+function ensureThemePanel(){if($('themeFields')?.dataset.ready)return;$('themeFields').dataset.ready='1';for(const field of themeFields){const row=el('div',undefined,'theme-row');const meta=el('div');const label=el('label',field.label);label.htmlFor='theme-'+field.key;meta.append(label);meta.append(el('small','#'+field.key));const picker=document.createElement('input');picker.type='color';picker.id='theme-'+field.key;picker.dataset.key=field.key;const text=document.createElement('input');text.type='text';text.inputMode='text';text.maxLength=7;text.dataset.key=field.key;text.setAttribute('aria-label',field.label+' hexaszíne');const commit=value=>updateCustomThemeField(field.key,value);picker.addEventListener('input',e=>commit(e.target.value));text.addEventListener('change',e=>commit(e.target.value));text.addEventListener('blur',e=>syncThemeField(field.key,normalizeThemeColor(e.target.value,currentPalette()[field.key])));row.append(meta,picker,text);$('themeFields').append(row);}}
+function syncThemeField(key,value){const picker=$('theme-'+key),text=document.querySelector('input[type=text][data-key="'+key+'"]');if(picker)picker.value=value;if(text)text.value=value;}
+function syncThemePanel(){ensureThemePanel();const palette=currentPalette();for(const field of themeFields)syncThemeField(field.key,palette[field.key]);}
+function updateThemeSummary(){const node=$('themeSummary');if(!node)return;const presets=Object.keys(themePresets).length;const editable=themeFields.length;const selected=$('theme').value;const active=selected==='custom'?'Egyedi színek':$('theme').selectedOptions[0]?.textContent||'Világos';node.textContent=presets+' beépített sablon · '+editable+' külön állítható szín · Aktív: '+active;}
+function seedCustomFrom(themeName){const palette=clonePalette(themePresets[themeName]?themeName:'light');saveCustomPalette(palette);return palette;}
+function openThemeCustomizer(){syncThemePanel();$('themeCustomizer').hidden=false;document.body.classList.add('theme-panel-open');}
+function closeThemeCustomizer(){$('themeCustomizer').hidden=true;document.body.classList.remove('theme-panel-open');}
+function updateCustomThemeField(key,value){let palette;
+ if($('theme').value!=='custom'){const source=themePresets[$('theme').value]?$('theme').value:activeBuiltinTheme();try{localStorage.setItem(lastBuiltinThemeKey,source);}catch{}palette=seedCustomFrom(source);$('theme').value='custom';document.documentElement.dataset.theme='custom';try{localStorage.setItem(themeKey,'custom');}catch{}}else palette=loadCustomPalette();
+ palette[key]=normalizeThemeColor(value,palette[key]);saveCustomPalette(palette);applyPalette(palette);syncThemePanel();updateThemeSummary();}
+function setTheme(value,save=false){let theme=themeNames.has(value)?value:(value==='lavender'?'peach':'light');if(theme!=='custom'&&!themePresets[theme])theme='light';if(theme!=='custom'){try{localStorage.setItem(lastBuiltinThemeKey,theme);}catch{}applyPalette(themePresets[theme]);}else{let palette=loadCustomPalette();if(!localStorage.getItem(customThemeKey))palette=seedCustomFrom(activeBuiltinTheme());applyPalette(palette);}document.documentElement.dataset.theme=theme;$('theme').value=theme;syncThemePanel();updateThemeSummary();if(save){try{localStorage.setItem(themeKey,theme);}catch{}}}
+let initialTheme='light';try{initialTheme=localStorage.getItem(themeKey)||localStorage.getItem('bela-webchat-theme-v1')||'light';}catch{}
+setTheme(initialTheme);
+$('theme').addEventListener('change',e=>setTheme(e.target.value,true));
+$('themeCustomizeToggle').addEventListener('click',()=>{$('themeCustomizer').hidden?openThemeCustomizer():closeThemeCustomizer();});
+$('themeCustomizeClose').addEventListener('click',closeThemeCustomizer);
+$('themeReset').addEventListener('click',()=>{const source=$('theme').value==='custom'?activeBuiltinTheme():$('theme').value;const palette=seedCustomFrom(source);document.documentElement.dataset.theme='custom';$('theme').value='custom';try{localStorage.setItem(themeKey,'custom');}catch{}applyPalette(palette);syncThemePanel();updateThemeSummary();});
+$('themeUsePreset').addEventListener('click',()=>{setTheme(activeBuiltinTheme(),true);});
+window.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('themeCustomizer').hidden)closeThemeCustomizer();});
+const labels={queued:'Feldolgozásra vár',handed_off:'Átadás folyamatban',seen:'Béla feldolgozza',answered:'Válaszolt',unknown:'Bizonytalan – megállítva',failed_unverified:'Sikertelen – nincs újrapróbálás',legacy_75_failed_unverified:'Archiválva – nem indul újra',cancelled_too_long:'Túl hosszú, nem lett elküldve',cancelled_by_user:'Visszavonva – nem lett elküldve',closed:'Tulajdonos lezárta – nincs újraküldés'};
+const workLabels={waiting:'vár',running:'folyamatban',completed:'kész',completed_no_text:'kész, szöveges válasz nincs',uncertain:'sikertelen / nem indul újra'};
+const telegramLabels={waiting:'vár',delivered:'kézbesítve',partial:'részleges',blocked_by_gate:'kapu tiltja',uncertain:'bizonytalan'};
+function progressText(item){
+ const state=item.work_state||({queued:'waiting',handed_off:'running',seen:'running',answered:'completed',unknown:'uncertain',failed_unverified:'uncertain',legacy_75_failed_unverified:'uncertain'})[item.state];
+ if(!state)return '';
+ if(item.webchat_isolated){
+   const sync=item.sync||item.sync_out||item.sync_in;
+   const names={new:'előkészítés alatt',ready:'küldésre vár',done:'kézbesítve',invalid:'elutasítva, ellenőrzés szükséges',uncertain:'nem igazolt – nincs automatikus újraküldés'};
+   const status=sync?(names[sync.state]||sync.state):'korábbi üzenet, nincs visszamenőleges küldés';
+   const parts=sync?.parts?(' ('+sync.confirmed+'/'+sync.parts+' rész)'):'';
+   return 'Munka: '+(workLabels[state]||state)+' · Telegram: '+status+parts;
+ }
+ const tg=item.telegram||{},parts=Array.isArray(tg.parts)?tg.parts:[];
+ const reasons=new Set([...(Array.isArray(tg.anomalies)?tg.anomalies:[]),...parts.flatMap(p=>p?.tool_call_id===null&&!p?.content_ref?[]:Array.isArray(p?.reasons)?p.reasons:[])].filter(x=>typeof x==='string'));
+ const mismatches=parts.filter(p=>Array.isArray(p?.reasons)&&p.reasons.includes('echo_mismatch'));
+ const echoMismatch=reasons.has('echo_mismatch');
+ const accentOnly=echoMismatch&&mismatches.length>0&&mismatches.every(p=>p.echo_difference==='accent_only');
+ const infoCodes=new Set(['echo_mismatch','plain_fallback','document_fallback']);
+ const anomaly=[...reasons].some(x=>!infoCodes.has(x));
+ let projection=telegramLabels[tg.state]||'nincs igazolás';
+ // Accent-only is informational ONLY with both owner delivery receipts and no other problem.
+ const received=role=>parts.some(p=>p?.role===role&&Array.isArray(p.message_ids)&&p.message_ids.length===1&&p.message_ids.every(id=>typeof id==='string'&&/^[1-9][0-9]*$/.test(id)));
+ const onlyAccentParts=parts.every(p=>['echo','answer'].includes(p?.role)&&(p.state==='blocked_by_gate'||p.state==='delivered'||(p.role==='echo'&&p.echo_difference==='accent_only'&&Array.isArray(p.reasons)&&p.reasons.every(x=>x==='echo_mismatch'))));
+ if(accentOnly&&!anomaly&&received('echo')&&received('answer')&&onlyAccentParts&&tg.state==='uncertain')projection='kézbesítve';
+ if(anomaly)projection+=' · küldési anomália';
+ if(reasons.has('plain_fallback'))projection+=' · sima szöveg';
+ if(echoMismatch)projection+=accentOnly?' · ékezet eltér':' · eltérő visszhang';
+ if(tg.state==='partial'&&parts.some(p=>p?.state==='blocked_by_gate'))projection+=' · kapu tiltja';
+ const photos=parts.filter(p=>p?.role==='photo');
+ if(photos.length){const ok=photos.filter(p=>p.state==='delivered'&&Array.isArray(p.message_ids)&&p.message_ids.length===1).length;
+   projection+=' · képek '+ok+'/'+photos.length;
+   if(photos.some(p=>p.media_transport==='document'))projection+=' · nagy kép dokumentumként';
+ }else if(Array.isArray(item.uploads)&&item.uploads.some(u=>u?.image===true))projection+=' · képek nem tükrözve';
+ return 'Munka: '+(workLabels[state]||'bizonytalan')+' · Telegram: '+projection;
+}
+async function api(path,body){const r=await fetch(path,{method:body===undefined?'GET':'POST',credentials:'same-origin',signal:AbortSignal.timeout(15000),headers:body===undefined?{}:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});if(!r.ok){let detail;try{detail=await r.json();}catch{}const e=new Error(detail?.code==='transport_too_long'?'Túl hosszú, nem lett elküldve. Rövidítsd a kérést.':detail?.code==='dispatch_paused'?'Feldolgozás szünetel; a kérés nem került sorba.':'HTTP '+r.status);e.status=r.status;e.code=detail?.code;throw e;}return r.json();}
+function showLogin(){authEpoch++;latest=null;lastKey='';$('messages').replaceChildren();if($('gallery').open)$('gallery').close();logged=false;$('login').hidden=false;$('workspace').hidden=true;$('logout').hidden=true;$('connection').textContent='Nincs kapcsolat';}
+function showChat(){logged=true;$('login').hidden=true;$('workspace').hidden=false;$('logout').hidden=false;$('connection').textContent='Helyi kapcsolat';}
+function el(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;}
+// Safe text-node renderer. Telegram's ledger stores MarkdownV2 wire text;
+// web answers retain their canonical Markdown. Never interpret raw HTML.
+function inline(node,s,tg=false){
+ const re=tg?/\\[\\_\*\[\]\(\)~`>#+\-=|{}.!]|`[^`\n]+`|\*\*[^*\n]+\*\*|\*(?:\\.|[^*\\\n])+\*|__(?:\\.|[^_\\\n])+__|_(?:\\.|[^_\\\n])+_|~(?:\\.|[^~\\\n])+~|\[(?:\\.|[^\]\\\n])+\]\((?:\\.|[^)\\\n])+\)/g:/\\[\\`*_{}\[\]()#+\-.!|>~]|`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\*[^*\n]+\*|_[^_\n]+_|~~[^~\n]+~~|\[[^\]\n]+\]\([^)\n]+\)/g;
+ let i=0;const unescape=x=>x.replace(/\\([\\_\*\[\]\(\)~`>#+\-=|{}.!])/g,'$1');
+ for(const m of s.matchAll(re)){
+  node.append(document.createTextNode(s.slice(i,m.index)));const v=m[0];
+  if(v.startsWith('\\'))node.append(document.createTextNode(v.slice(1)));
+  else if(v.startsWith('[')){const z=/^\[(.*)\]\((.*)\)$/.exec(v);if(z){let u;try{u=new URL(unescape(z[2]));}catch{}if(u&&['http:','https:'].includes(u.protocol)){const a=el('a',unescape(z[1]));a.href=u.href;a.target='_blank';a.rel='noopener noreferrer';node.append(a);}else node.append(document.createTextNode(unescape(z[1])));}else node.append(document.createTextNode(v));}
+  else {let tag='em',n=1;if(v.startsWith('`'))tag='code';else if(v.startsWith('**')||(!tg&&v.startsWith('__'))){tag='strong';n=2;}else if(tg&&v.startsWith('*'))tag='strong';else if(tg&&v.startsWith('__')){tag='u';n=2;}else if(v.startsWith('~')){tag='s';n=tg?1:2;}node.append(el(tag,unescape(v.slice(n,-n))));}
+  i=m.index+v.length;
+ }
+ node.append(document.createTextNode(s.slice(i)));
+}
+function markdown(text,tg=false){
+ const frag=document.createDocumentFragment();let src=String(text).replace(/\r\n?/g,'\n');
+ // Legacy Telegram messages sometimes have bullets flattened onto one line.
+ if(tg&&!src.includes('```'))src=src.replace(/[ \t]+•[ \t]+/g,'\n• ');
+ const lines=src.split('\n');let i=0;
+ const cells=s=>s.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(x=>x.trim());
+ const bullet=/^\s*(?:[-*•]|\\-)\s+/;const ordered=/^\s*\d+(?:\\?\.|\))\s+/;
+ while(i<lines.length){let l=lines[i];if(!l.trim()){i++;continue;}
+  if(l.startsWith('```')){let a=[];i++;while(i<lines.length&&!lines[i].startsWith('```'))a.push(lines[i++]);if(i<lines.length)i++;const pre=el('pre');pre.append(el('code',a.join('\n')));frag.append(pre);continue;}
+  const h=/^(#{1,6})\s+(.*)$/.exec(l);if(h){const n=el('h'+Math.min(h[1].length,3));inline(n,h[2],tg);frag.append(n);i++;continue;}
+  if(l.includes('|')&&i+1<lines.length&&/^\s*\|?\s*:?-{3,}/.test(lines[i+1])&&cells(lines[i+1]).every(x=>/^:?-{3,}:?$/.test(x))){const t=el('table'),head=el('thead'),tr=el('tr');for(const c of cells(l)){const n=el('th');inline(n,c,tg);tr.append(n);}head.append(tr);t.append(head);i+=2;const b=el('tbody');while(i<lines.length&&lines[i].includes('|')&&lines[i].trim()){const row=el('tr');for(const c of cells(lines[i++])){const n=el('td');inline(n,c,tg);row.append(n);}b.append(row);}t.append(b);const wrap=el('div',undefined,'table-wrap');wrap.append(t);frag.append(wrap);continue;}
+  if(bullet.test(l)||ordered.test(l)){const numbered=ordered.test(l),rx=numbered?ordered:bullet,ul=el(numbered?'ol':'ul');if(numbered){const start=parseInt(l,10);if(Number.isFinite(start))ul.start=start;}while(i<lines.length&&rx.test(lines[i])){const li=el('li');inline(li,lines[i++].replace(rx,''),tg);ul.append(li);}frag.append(ul);continue;}
+  const q=/^\s*(?:>|\\>)\s+(.*)$/.exec(l);if(q){const n=el('blockquote');inline(n,q[1],tg);frag.append(n);i++;continue;}
+  const para=el('p');inline(para,l,tg);frag.append(para);i++;
+ }return frag;
+}
+function bubble(role,text,meta,md=false,tg=false){const b=el('div',undefined,'bubble '+(role==='user'?'user':role==='assistant'?'assistant':''));b.append(el('div',meta,'meta'));if(md||tg){const content=el('div',undefined,'answer-text');content.append(markdown(text,tg));b.append(content);if(md){const c=el('button','Markdown másolása','copy');c.type='button';c.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(text);c.textContent='Másolva';}catch{c.textContent='Nem másolható';}});b.append(c);}}else b.append(el('div',text,'plain-text'));return b;}
+const timeFormat=new Intl.DateTimeFormat('hu-HU',{timeZone:'Europe/Budapest',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+const validUpload=e=>e?.upload?.available===true&&/^[a-f0-9]{32}\.(txt|md|csv|json|pdf|png|jpg|jpeg|webp)$/.test(e.upload.name);
+const validImage=e=>e&&((validUpload(e)&&e.upload.image===true&&/\.(png|jpg|jpeg|webp)$/.test(e.upload.name))||(typeof e.image==='string'&&/^[a-f0-9]{64}\.(jpg|png|webp|gif)$/.test(e.image)));
+const imageURL=e=>validUpload(e)?'/api/preview/uploads/'+e.upload.name:'/api/preview/media/'+e.image;
+const validVideo=e=>e&&typeof e.video==='string'&&/^[a-f0-9]{64}\.(mp4|webm)$/.test(e.video);
+let galleryItems=[],galleryPos=0,galleryMode='photo';
+const galleryDialog=$('gallery');
+function latestPhotos(){return (latest?.gallery||[]).filter(validImage).slice(0,20);}
+function latestVideos(){return (latest?.video_gallery||[]).filter(validVideo).slice(0,20);}
+function paintGallery(){
+ const e=galleryItems[galleryPos];if(!e)return;
+ const video=validVideo(e),name=video?e.video:validUpload(e)?e.upload.name:e.image,url=video?'/api/preview/media/'+name:imageURL(e);
+ const v=$('galleryVideo'),img=$('galleryImage');v.pause();v.removeAttribute('src');v.load();img.removeAttribute('src');
+ v.hidden=!video;img.hidden=video;if(video)v.src=url;else{img.src=url;img.alt='Csatolt kép '+(galleryPos+1);}
+ $('galleryTitle').textContent=video?'Videógaléria':'Képgaléria';$('galleryLatest').textContent=video?'Legutóbbi 20 videó':'Legutóbbi 20 kép';
+ $('galleryCount').textContent=(galleryPos+1)+' / '+galleryItems.length;
+ $('galleryCaption').textContent=e.text||'';
+ $('galleryDownload').href=url+'?download=1';$('galleryDownload').download='bela-'+name;
+ $('galleryPrev').disabled=galleryPos===0;$('galleryNext').disabled=galleryPos===galleryItems.length-1;
+}
+function openGallery(e=null,mode='photo'){
+ galleryMode=validVideo(e)?'video':mode;galleryItems=galleryMode==='video'?latestVideos():latestPhotos();galleryPos=e?galleryItems.findIndex(x=>x.key===e.key):0;
+ if(e&&galleryPos<0){galleryItems=[e];galleryPos=0;}
+ if(!galleryItems.length)return;paintGallery();if(!galleryDialog.open)galleryDialog.showModal();
+}
+function moveGallery(n){galleryPos=Math.max(0,Math.min(galleryItems.length-1,galleryPos+n));paintGallery();}
+$('galleryOpen').addEventListener('click',()=>openGallery());$('galleryLatest').addEventListener('click',()=>openGallery(null,galleryMode));$('videoOpen').addEventListener('click',()=>openGallery(null,'video'));
+$('galleryClose').addEventListener('click',()=>galleryDialog.close());
+$('galleryPrev').addEventListener('click',()=>moveGallery(-1));$('galleryNext').addEventListener('click',()=>moveGallery(1));
+galleryDialog.addEventListener('keydown',e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();moveGallery(e.key==='ArrowLeft'?-1:1);}});
+galleryDialog.addEventListener('click',e=>{if(e.target===galleryDialog)galleryDialog.close();});
+galleryDialog.addEventListener('close',()=>{$('galleryImage').removeAttribute('src');const v=$('galleryVideo');v.pause();v.removeAttribute('src');v.load();galleryItems=[];});
+function render(force=false){
+ if(!latest)return;updateCapacityHint();const jobs=latest.jobs||[],entries=latest.entries||[]; $('galleryOpen').disabled=!latestPhotos().length;$('videoOpen').disabled=!latestVideos().length;
+ $('modeHint').textContent=(latest.automatic?'Feldolgozás engedélyezve · a Küldés sorba állítja a kérést.':'Feldolgozás szünetel · új kérés nem küldhető.')+
+ (latest.sync_enabled?' Telegram-szinkron: bekapcsolva; a visszaigazolt kézbesítést külön jelöljük.':
+ ' Telegram-szinkron: szünetel; a nem igazolt küldéseket nem ismételjük automatikusan.');
+ // Distinguish historical manually held jobs from actionable queued work.
+ // Never alter the backend queue limit: held rows still count towards capacity.
+ const waiting=Math.max(jobs.filter(j=>j.state==='queued').length,Number.isInteger(latest.queue?.waiting)?latest.queue.waiting:0);
+ const held=Math.min(waiting,Number.isInteger(latest.queue?.held)?Math.max(0,latest.queue.held):0);
+ const actionableWaiting=Math.max(0,waiting-held);
+ const running=jobs.filter(j=>j.state==='handed_off'||j.state==='seen');
+ const stale=Number.isFinite(latest.generated_at)&&Date.now()/1000-latest.generated_at>20;
+ $('send').disabled=busy||!!pending||waiting>=50||stale||!latest.automatic;
+ const heldLabel=held?' · '+held+' korábbi zárolt feladat':'';
+ $('queueStatus').textContent=stale?'A Webchat-nézet nem frissült – beküldés szünetel':
+  waiting>=50?'A várakozási sor megtelt (50/50)'+heldLabel:
+  !latest.automatic?'Feldolgozás szünetel'+heldLabel:
+  latest.problem?latest.problem+heldLabel:
+  running.length?'Béla dolgozik ('+running.length+') · várakozik: '+actionableWaiting+heldLabel:
+  actionableWaiting?'Várakozó új kérés: '+actionableWaiting+heldLabel:
+  'Készen áll'+heldLabel;
+ const current=running.at(-1);
+ if(current&&progressText(current))$('queueStatus').textContent+=' · '+progressText(current);
+ const key=JSON.stringify([entries,latest.problem,latest.sync_enabled,latest.sync_problem]);if(!force&&key===lastKey)return;lastKey=key;
+ const m=$('messages');if(!force&&Array.from(m.querySelectorAll('video')).some(v=>!v.paused&&!v.ended)){lastKey='';return;}const atBottom=m.scrollHeight-m.scrollTop-m.clientHeight<90,oldTop=m.scrollTop;
+ m.replaceChildren();
+ for(const e of entries){
+  const source=e.source==='web+telegram'?'Web + Telegram':e.source==='telegram'?'Telegram-napló':'Web';
+  const time=Number.isFinite(e.at)?timeFormat.format(new Date(e.at*1000)):'';
+  let meta=(e.role==='user'?'Te':e.role==='status'?'Állapot':'Béla')+' · '+source+(time?' · '+time:'');
+  if(e.role==='user'&&e.state)meta+=' · '+(labels[e.state]||e.state);
+  if(e.role==='user'&&e.state==='queued'){
+   const job=jobs.find(j=>e.key==='w:'+j.request_id+':in');
+   if(job&&Number.isInteger(job.queue_position))meta+=' · '+job.queue_position+'. a sorban';
+  }
+  if(progressText(e))meta+=' · '+progressText(e);
+  if(e.answer_source==='telegram')meta+=' · Telegram-válasz (eredeti webes Markdown nincs)';
+  if(e.markdown&&e.source!=='web+telegram'&&e.delivery?.confirmed)meta+=e.delivery.same_markdown?' · Telegram-küldés igazolt':' · Telegram-formátum külön';
+  const reasonNames={quota:'Claude-keret elérhetetlen',auth:'Claude-hitelesítési hiba',timeout:'Időtúllépés',empty_result:'Üres Claude-válasz',cli_failure:'Claude-hívási hiba',invalid_result:'Érvénytelen Claude-kimenet',invalid_request:'Érvénytelen kérés',internal:'Belső feldolgozási hiba',unverified:'Ellenőrizetlen hiba'};
+  const text=e.role==='status'?(e.state==='failed_unverified'?(labels[e.state]+' · '+(reasonNames[e.failure_code]||'Kézi ellenőrzés szükséges')):(labels[e.state]||e.state)):(e.text|| (e.attachment?'[Csatolmány: '+e.attachment+']':'[Üres naplóbejegyzés]'));
+  const b=bubble(e.answer_source==='no_text'?'status':e.role,text,meta,e.markdown===true,e.telegram_format===true);
+  if(e.role==='user'&&e.source.startsWith('web')&&e.state==='queued'&&/^w:[a-f0-9-]{36}:in$/.test(e.key)){
+   const id=e.key.slice(2,-3),btn=el('button','Várakozó kérés törlése','copy');btn.type='button';
+   btn.addEventListener('click',async()=>{
+    if(!confirm('Biztosan visszavonod ezt a még el nem indított kérést?'))return;
+    btn.disabled=true;
+    try{await api('/api/preview/queue/cancel',{request_id:id});$('notice').textContent='Várakozó kérés visszavonva.';await refresh();}
+    catch(err){$('notice').textContent='Törlés nem sikerült: '+err.message;btn.disabled=false;}
+   });
+   b.append(btn);
+  }
+  if(e.uploads){
+   const panel=el('div',undefined,'sent-attachments');for(const u of e.uploads){const item={...e,key:e.key+':'+u.name,upload:u};if(validImage(item)){const a=el('button',undefined,'photo-link web-upload-image');a.type='button';a.title=u.display_name||'Kép nagyítása';a.addEventListener('click',()=>openGallery(item));const img=el('img');img.src=imageURL(item);img.alt=u.display_name||'Csatolt kép';img.loading='lazy';a.append(img);panel.append(a);}else if(validUpload(item)){const dl=el('a',u.display_name||'Csatolt fájl','upload-file');dl.href='/api/preview/uploads/'+u.name+'?download=1';dl.download=u.display_name||'bela-'+u.name;panel.append(dl);}else panel.append(el('span',(u.display_name||'Fájl')+' – nem elérhető','photo-missing'));}if(!e.uploads.length)panel.append(el('div','A csatolmányjegyzék nem érhető el.','photo-missing'));b.insertBefore(panel,b.children[1]);
+  }else if(validImage(e)){
+
+   const a=el('button',undefined,'photo-link'+(validUpload(e)?' web-upload-image':''));a.type='button';a.setAttribute('aria-label','Kép nagyítása');a.addEventListener('click',()=>openGallery(e));
+   const img=el('img');img.src=imageURL(e);img.alt=validUpload(e)?'Feltöltött kép':'Telegramon küldött kép';img.loading='lazy';img.decoding='async';a.append(img);b.insertBefore(a,b.children[1]);
+   img.addEventListener('error',()=>{a.replaceWith(el('div','A kép jelenleg nem elérhető.','photo-missing'));});
+  }else if(validUpload(e)){const dl=el('a','Csatolt '+e.upload.name.split('.').pop().toUpperCase()+' fájl · Letöltés','upload-file');dl.href='/api/preview/uploads/'+e.upload.name+'?download=1';dl.download='bela-'+e.upload.name;b.insertBefore(dl,b.children[1]);
+  }else if(e.upload){b.insertBefore(el('div','A csatolt fájl nem elérhető.','photo-missing'),b.children[1]);
+  }else if(validVideo(e)){
+   const panel=el('div',undefined,'video-panel'),v=el('video');v.controls=true;v.playsInline=true;v.preload='metadata';v.src='/api/preview/media/'+e.video;panel.append(v);
+   const btn=el('button','Videó nagyítása','copy');btn.type='button';btn.addEventListener('click',()=>{v.pause();openGallery(e,'video');});panel.append(btn);
+   const dl=el('a','Letöltés','copy');dl.href=v.src+'?download=1';dl.download='bela-'+e.video;panel.append(dl);b.insertBefore(panel,b.children[1]);
+   v.addEventListener('error',()=>panel.append(el('div','A videó nem játszható le ebben a böngészőben. Próbáld letölteni.','photo-missing')));
+  }else if(e.video_state)b.insertBefore(el('div',e.video_state==='loading'?'Videó előkészítése…':'A videó helyi másolata nem érhető el (hiányzó fájl vagy méretkorlát).','photo-missing'),b.children[1]);
+  else if(e.attachment_file&&/^[a-f0-9]{64}\.[a-z0-9]{1,12}$/.test(e.attachment_file)&&e.attachment_state==='ready'){
+   const label=String(e.attachment_name||'Elküldött dokumentum').slice(0,180);
+   const kb=Number.isFinite(e.attachment_bytes)?' ('+Math.ceil(e.attachment_bytes/1024)+' KB)':'';
+   const dl=el('a','📎 '+label+kb+' · Letöltés','upload-file');
+   dl.href='/api/preview/media/'+e.attachment_file+'?download=1';dl.download=label;
+   b.insertBefore(dl,b.children[1]);
+  }else if(e.attachment_state)b.insertBefore(el('div',e.attachment_state==='loading'?'Fájl biztonságos átvétele…':'A fájl másolata nem érhető el (méretkorlát, hiányzó forrás vagy biztonsági ellenőrzés).','photo-missing'),b.children[1]);
+  else if(e.attachment==='photo')b.insertBefore(el('div','A kép helyi fájlja nem elérhető.','photo-missing'),b.children[1]);
+  m.append(b);
+ }
+ if(!m.children.length)m.append(el('div','Még nincs megjeleníthető üzenet.','empty'));
+ m.scrollTop=atBottom||force?m.scrollHeight:oldTop;
+}
+let refreshing=false;
+function submissionNotice(job){
+ // Only the exact UUID of this browser's latest successful submission controls this label.
+ // Do not guess from Telegram entries, order, or another owner's job.
+ switch(job?.state){
+  case 'queued':return 'Kérés rögzítve, feldolgozásra vár.';
+  case 'handed_off':case 'seen':return 'Béla dolgozik a kérésen.';
+  case 'answered':return 'Kész: Béla válasza megérkezett.';
+  case 'failed_unverified':case 'legacy_75_failed_unverified':case 'unknown':return 'Bizonytalan vagy sikertelen feldolgozás – nincs automatikus újraküldés.';
+  case 'cancelled_by_user':return 'A várakozó kérés visszavonva.';
+  default:return null;
+ }
+}
+async function refresh(){if(refreshing)return;refreshing=true;const epoch=authEpoch;try{const data=await api('/api/preview/timeline');if(epoch!==authEpoch)return;latest=data;if(!logged)showChat();$('connection').textContent='Helyi kapcsolat';if(pending&&[...(latest.jobs||[]),...(latest.entries||[])].some(j=>j.request_id===pending.id||j.key==='w:'+pending.id+':in')){if(!trackedSubmission)trackedSubmission=pending.id;pending=null;}
+ if(trackedSubmission){const job=(latest.jobs||[]).find(j=>j.request_id===trackedSubmission);const info=submissionNotice(job);if(info)$('notice').textContent=info;}
+ render();}catch(e){if(epoch!==authEpoch)return;if(e.status===401)showLogin();else $('connection').textContent='Kapcsolati hiba';}finally{refreshing=false;}}
+$('loginForm').addEventListener('submit',async e=>{e.preventDefault();try{await api('/api/auth/login',{username:'preview-owner',password:$('password').value});$('password').value='';$('loginError').textContent='';showChat();await refresh();}catch{$('loginError').textContent='Sikertelen belépés.';}});
+$('logout').addEventListener('click',async()=>{authEpoch++;logged=false;trackedSubmission=null;clearAttachment();try{await api('/api/auth/logout',{});}finally{latest=null;lastKey='';$('messages').replaceChildren();showLogin();}});
+let attachments=[];
+const allowedExt=new Set(['txt','md','csv','json','pdf','png','jpg','jpeg','webp']);
+function paintAttachments(){const list=$('attachmentList');list.replaceChildren();$('attachName').textContent=attachments.length?attachments.length+' / 20 fájl':'';$('removeAttach').hidden=!attachments.length;for(const a of attachments){const card=el('div',undefined,'attach-card');if(a.preview){const img=el('img');img.src=a.preview;img.alt=a.file.name;card.append(img);}card.append(el('span',a.file.name+' ('+Math.ceil(a.file.size/1024)+' KB)'));const x=el('button','×');x.type='button';x.setAttribute('aria-label',a.file.name+' eltávolítása');x.addEventListener('click',()=>{if(busy||pending)return;if(a.preview)URL.revokeObjectURL(a.preview);attachments=attachments.filter(z=>z!==a);paintAttachments();});card.append(x);list.append(card);}if(typeof updateCapacityHint==='function')updateCapacityHint();}
+function clearAttachment(){for(const a of attachments)if(a.preview)URL.revokeObjectURL(a.preview);attachments=[];$('attachment').value='';paintAttachments();}
+$('attach').addEventListener('click',()=>{if(!busy&&!pending)$('attachment').click();});
+$('removeAttach').addEventListener('click',()=>{if(!busy&&!pending)clearAttachment();});
+function addAttachments(files){if(busy||pending)return;const selected=files.map(file=>({file,ext:file.name.split('.').pop().toLowerCase()}));if(attachments.length+selected.length>20){$('notice').textContent='Legfeljebb 20 fájlt csatolhatsz.';return;}if(selected.some(a=>!allowedExt.has(a.ext)||a.file.size<1||a.file.size>30*1024*1024)){$('notice').textContent='Nem támogatott fájl vagy méret (max. 30 MB/fájl).';return;}for(const a of selected){if(['png','jpg','jpeg','webp'].includes(a.ext))a.preview=URL.createObjectURL(a.file);attachments.push(a);}paintAttachments();$('notice').textContent='';}
+$('attachment').addEventListener('change',()=>{const files=Array.from($('attachment').files);$('attachment').value='';addAttachments(files);});
+// Native clipboard paste: no clipboard permission prompt; only user paste events.
+// Do not intercept normal text paste or clipboard events outside the composer.
+$('text').addEventListener('paste',e=>{
+ const data=e.clipboardData;if(!data)return;
+ const types={'image/png':'png','image/jpeg':'jpg','image/webp':'webp'};
+ let images=Array.from(data.items||[]).filter(x=>x.kind==='file'&&types[x.type]).map(x=>x.getAsFile()).filter(Boolean);
+ if(!images.length)images=Array.from(data.files||[]).filter(x=>types[x.type]);
+ if(!images.length)return;
+ e.preventDefault();if(busy||pending){$('notice').textContent='A jelenlegi kérés még folyamatban van.';return;}
+ const stamp=Date.now();const files=images.map((f,i)=>new File([f],'kepernyokep-'+stamp+'-'+(i+1)+'.'+types[f.type],{type:f.type}));
+ addAttachments(files);
+});
+
+async function uploadFile(a){if(a.path)return a.path;const r=await fetch('/api/preview/upload',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/octet-stream','X-Bela-Extension':a.ext},body:a.file});if(!r.ok)throw Error('Feltöltési hiba: HTTP '+r.status);const x=await r.json();if(typeof x.path!=='string'||!/^\/[^\r\n]+\/uploads\/[a-f0-9]{32}\.(txt|md|csv|json|pdf|png|jpg|jpeg|webp)$/.test(x.path))throw Error('Érvénytelen fájlazonosító');a.path=x.path;return x.path;}
+// Match Python json.dumps(..., ensure_ascii=True) string transport, including
+// surrogate pairs. Capacity metadata comes from the worker's real prompt builder.
+function transportSize(text,withFiles,capacity,useLong=false){
+ if(!capacity||!Number.isFinite(capacity.limit))return null;
+ const overhead=useLong?capacity.long_batch_overhead:withFiles?capacity.batch_overhead:capacity.plain_overhead;
+ if(!Number.isFinite(overhead))return null;
+ const ascii=JSON.stringify(text).replace(/[\u007f-\uffff]/g,c=>'\\u'+c.charCodeAt(0).toString(16).padStart(4,'0'));
+ return {used:overhead+ascii.length-2,limit:capacity.limit};
+}
+function needsLongFile(text,hasFiles,capacity){
+ const direct=transportSize(text,hasFiles,capacity);
+ return text.length>(hasFiles?580:800)||!!(direct&&direct.used>direct.limit);
+}
+function currentTransportSize(){
+ const text=$('text').value.trim()||(attachments.length?'Olvasd el a csatolt fájlokat, és foglald össze.':'');
+ const long=needsLongFile(text,attachments.length>0,latest?.transport_capacity);
+ return transportSize(long?LONG_REQUEST_MARKER:text,attachments.length>0||long,latest?.transport_capacity,long);
+}
+function updateCapacityHint(){
+ const hint=$('capacityHint');if(!hint)return;
+ const text=$('text').value.trim(),c=currentTransportSize();
+ const long=needsLongFile(text,attachments.length>0,latest?.transport_capacity);
+ const count=text.length+' / '+LONG_INPUT_MAX+' karakter';
+ const info=long?' · A teljes kérés automatikusan privát TXT-csatolmányként kerül átadásra.':' · Közvetlen terminál-átadás.';
+ const capacityInfo=c?' · Terminál: '+c.used+' / '+c.limit+' átadási karakter.':' · Terminálkapacitás nem ismert.';
+ hint.textContent=count+info+capacityInfo+(c&&c.used>c.limit?' A rövid átvivő üzenet sem fér el, nem küldhető.':'');
+}
+$('text').addEventListener('input',updateCapacityHint);
+$('text').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&e.keyCode!==229){e.preventDefault();if(!$('send').disabled)$('composer').requestSubmit();}});
+// Only real interaction renews idle time. Background polling does not.
+let lastActivity=0,activityTimer;function pingActivity(){if(!logged)return;lastActivity=Date.now();const epoch=authEpoch;api('/api/preview/activity',{}).catch(e=>{if(e.status===401&&epoch===authEpoch)showLogin();});}function activity(e){if(!logged||!e.isTrusted)return;clearTimeout(activityTimer);if(Date.now()-lastActivity>=15000)pingActivity();else{const epoch=authEpoch;activityTimer=setTimeout(()=>{if(epoch===authEpoch)pingActivity();},15000-(Date.now()-lastActivity));}}
+for(const type of ['pointerdown','keydown','wheel','touchstart'])document.addEventListener(type,activity,{passive:true});
+$('composer').addEventListener('submit',async e=>{
+ e.preventDefault();if(busy||pending||!latest||!latest.automatic||(latest.queue?.waiting??0)>=50)return;
+ let text=$('text').value.trim(),files=attachments.slice();
+ if(!text&&!files.length)return;if(!text)text='Olvasd el a csatolt fájlokat, és foglald össze.';
+ if(text.length>LONG_INPUT_MAX||/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f]/u.test(text)){$('notice').textContent='A kérés legfeljebb 5000 karakter lehet, vezérlőkarakterek nélkül.';return;}
+ const long=needsLongFile(text,files.length>0,latest?.transport_capacity);
+ if(long){
+   if(files.some(a=>a.file.name===LONG_FILE_NAME)){$('notice').textContent='A fenntartott fájlnév már csatolva van; nevezd át a saját fájlt.';return;}
+   if(files.length>=20){$('notice').textContent='A hosszú kérés egy privát TXT-fájlnak számít. Távolíts el egy csatolmányt (max. 20).';return;}
+   files.push({file:new File([text],LONG_FILE_NAME,{type:'text/plain'}),ext:'txt'});
+   text=LONG_REQUEST_MARKER;
+ }
+ const transport=transportSize(text,files.length>0,latest?.transport_capacity,long);
+ if(transport&&transport.used>transport.limit){$('notice').textContent='A rövid átvivő üzenet sem fér el a terminálon; a kérés nem lett elküldve.';return;}
+ busy=true;trackedSubmission=null;$('notice').textContent='';render();
+ try{
+  if(files.length){const items=[];for(let i=0;i<files.length;i++){$('notice').textContent='Fájl feltöltése: '+(i+1)+' / '+files.length;const path=await uploadFile(files[i]);items.push({id:path.split('/').pop(),name:files[i].file.name});}const batch=await api('/api/preview/batch',{files:items});if(typeof batch.path!=='string'||!/^\/[^\r\n]+\/uploads\/[a-f0-9]{32}\.json$/.test(batch.path))throw Error('Érvénytelen jegyzék');text+='\nCsatolt fajlok jegyzeke: '+batch.path;if(text.length>800)throw Error('A teljes kérés túl hosszú.');}
+  const requestId=crypto.randomUUID();pending={id:requestId,text};
+  const receipt=await api('/api/chat/f0/requests',{request_id:requestId,text});
+  if(receipt?.request_id!==requestId||!['queued','handed_off','seen','answered','unknown','failed_unverified','legacy_75_failed_unverified'].includes(receipt?.state))throw Error('Beküldési nyugta nem igazolható');
+  trackedSubmission=requestId;pending=null;$('text').value='';clearAttachment();$('notice').textContent='Kérés rögzítve, állapotfrissítés folyamatban.';await refresh();
+ }catch(e){
+  trackedSubmission=null;
+  if(e.code==='dispatch_paused'){pending=null;$('notice').textContent=e.message;}
+  else if(!pending){$('notice').textContent=e.message;}
+  else if(e.status&&e.status<500&&e.status!==404){
+   pending=null;$('notice').textContent='Kérés elutasítva: '+e.message;
+  }else{
+   // Read-only verification with the SAME UUID. Do not repeat POST ingestion.
+   try{
+    const status=await api('/api/preview/queue/status',{request_id:pending.id});
+    if(status.request_id===pending.id&&['queued','handed_off','seen','answered','unknown','failed_unverified','legacy_75_failed_unverified'].includes(status.state)){
+     pending=null;$('text').value='';clearAttachment();
+     $('notice').textContent='A kérés a szerveren rögzítve ('+status.state+'). Nincs újraküldés.';
+    }else $('notice').textContent='A beküldés nem igazolható. Ne küldd újra.';
+   }catch{$('notice').textContent='A beküldés eredménye bizonytalan. Ne küldd újra; ellenőrizd a terminált.';}
+  }
+ }finally{busy=false;render();}
+});
+refresh();setInterval(()=>{if(logged)refresh();},1800);

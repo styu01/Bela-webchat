@@ -6,12 +6,266 @@ const LONG_INPUT_MAX=5000;
 const LONG_FILE_NAME='bela-webchat-teljes-keres.txt';
 const LONG_REQUEST_MARKER='A teljes keresem a csatolt bela-webchat-teljes-keres.txt fajlban van. Olvasd el es hajtsd vegre.';
 
-// Presentation-only preference; no API requests or queue changes.
-const themeNames=new Set(['light','dark','ocean','cream','peach','slate','midnight','terracotta','cinnabar','sunlight','patina']);
-const themeKey='bela-webchat-theme-v1';
-function setTheme(value,save=false){const theme=themeNames.has(value)?value:(value==='lavender'?'peach':'light');document.documentElement.dataset.theme=theme;$('theme').value=theme;if(save){try{localStorage.setItem(themeKey,theme);}catch{}}}
-let initialTheme='light';try{initialTheme=localStorage.getItem(themeKey)||'light';}catch{}
-setTheme(initialTheme);$('theme').addEventListener('change',e=>setTheme(e.target.value,true));
+// P5.9.8.2: browser-local appearance editor. No message queues, network calls,
+// backend file writes, Telegram/Marveen or worker operations are performed here.
+// IMPORTANT: theme CSS lives in the served style.css due to style-src 'self' CSP.
+const themeNames = new Set(['light','dark','ocean','cream','peach','slate','midnight','terracotta','cinnabar','sunlight','patina']);
+const themeKeyV3 = 'bela-webchat-theme-v3';
+const themeKeyV2 = 'bela-webchat-theme-v2';
+const themeKeyV1 = 'bela-webchat-theme-v1';
+const themeCustomKeyV3 = 'bela-webchat-custom-palette-v3';
+const themeFields = [
+  {group:'Hátterek',key:'bg',label:'Oldal háttere'},
+  {group:'Hátterek',key:'panel',label:'Alap panelszín'},
+  {group:'Hátterek',key:'header-bg',label:'Fejléc háttér'},
+  {group:'Hátterek',key:'sidebar-bg',label:'Oldalsáv háttér'},
+  {group:'Hátterek',key:'input',label:'Beviteli mezők'},
+  {group:'Hátterek',key:'code',label:'Kódblokkok háttere'},
+  {group:'Hátterek',key:'table-head',label:'Táblázatfejléc'},
+  {group:'Szövegek',key:'text',label:'Elsődleges szöveg'},
+  {group:'Szövegek',key:'muted',label:'Másodlagos szöveg'},
+  {group:'Szövegek',key:'primary-text',label:'Elsődleges gomb szövege'},
+  {group:'Szövegek',key:'pill-text',label:'Állapotcímke szövege'},
+  {group:'Szövegek',key:'selected-text',label:'Aktív menü szövege'},
+  {group:'Szövegek',key:'logo-text',label:'Béla logó szövege'},
+  {group:'Gombok és kiválasztás',key:'primary',label:'Elsődleges gomb'},
+  {group:'Gombok és kiválasztás',key:'accent',label:'Kiemelések és hivatkozások'},
+  {group:'Gombok és kiválasztás',key:'control',label:'Másodlagos gombok'},
+  {group:'Gombok és kiválasztás',key:'selected',label:'Aktív menü háttere'},
+  {group:'Beszélgetés',key:'bubble',label:'Béla üzenetbuboréka'},
+  {group:'Beszélgetés',key:'user',label:'Saját üzenetbuborék'},
+  {group:'Beszélgetés',key:'user-border',label:'Saját buborék szegélye'},
+  {group:'Keretek',key:'border',label:'Általános szegély'},
+  {group:'Keretek',key:'selected-border',label:'Aktív menü szegélye'},
+  {group:'Keretek',key:'table-border',label:'Táblázat szegélye'},
+  {group:'Állapotok és logó',key:'logo-bg',label:'Béla logó háttere'},
+  {group:'Állapotok és logó',key:'notice',label:'Tájékoztató / figyelmeztetés'}
+];
+const themeKeys = themeFields.map(field => field.key);
+let themeCommitted = null;
+let themeDraft = null;
+let themePreviouslyFocused = null;
+
+function safeRead(key) {try {return localStorage.getItem(key);} catch {return null;}}
+function safeWrite(key,value) {try {localStorage.setItem(key,value);} catch { /* nonpersistent private-mode browser */ }}
+function validColor(value) {
+  if (typeof value !== 'string') return null;
+  const v=value.trim();
+  if (/^#[0-9a-fA-F]{3}$/.test(v)) return '#'+[...v.slice(1)].map(c=>c+c).join('').toLowerCase();
+  if (/^#[0-9a-fA-F]{6}$/.test(v)) return v.toLowerCase();
+  return null;
+}
+function normalizePalette(palette) {
+  if (!palette || typeof palette!=='object' || Array.isArray(palette)) return null;
+  const out={};
+  for (const key of themeKeys) {
+    const color=validColor(palette[key]);
+    if (!color) return null;
+    out[key]=color;
+  }
+  return out;
+}
+function readSavedTheme() {
+  const raw=safeRead(themeKeyV3);
+  if (raw) {
+    try {
+      const item=JSON.parse(raw);
+      if (item?.mode==='custom' && themeNames.has(item.base)) {
+        const palette=normalizePalette(item.palette);
+        if (palette) return {mode:'custom',base:item.base,palette};
+      }
+      if (item?.mode==='preset' && themeNames.has(item.base)) return {mode:'preset',base:item.base};
+    }catch{}
+  }
+  // P5.9.8.1 used inaccurate handwritten colors. Preserve builtin choice,
+  // but NEVER silently import those broken custom color definitions.
+  const old=safeRead(themeKeyV2) || safeRead(themeKeyV1) || 'light';
+  if (themeNames.has(old)) return {mode:'preset',base:old};
+  const last=safeRead('bela-webchat-theme-last-builtin-v1');
+  return {mode:'preset',base:themeNames.has(last)?last:'light'};
+}
+function readStoredCustom(){
+  try {
+    const entry=JSON.parse(safeRead(themeCustomKeyV3)||'null');
+    if(entry && themeNames.has(entry.base)){
+      const palette=normalizePalette(entry.palette);
+      if(palette)return {mode:'custom',base:entry.base,palette};
+    }
+  }catch{}
+  return null;
+}
+function storeCommittedTheme(){
+  safeWrite(themeKeyV3,JSON.stringify(themeCommitted));
+  if(themeCommitted.mode==='custom')safeWrite(themeCustomKeyV3,JSON.stringify({base:themeCommitted.base,palette:themeCommitted.palette}));
+}
+function clearThemeOverrides(){for(const key of themeKeys) document.documentElement.style.removeProperty('--'+key);}
+function applyTheme(theme) {
+  clearThemeOverrides();
+  document.documentElement.dataset.theme=theme.base;
+  document.documentElement.classList.toggle('theme-custom-active',theme.mode==='custom');
+  if(theme.mode==='custom') for (const key of themeKeys) document.documentElement.style.setProperty('--'+key,theme.palette[key]);
+  $('theme').value=theme.mode==='custom'?'custom':theme.base;
+  updateThemeSummary();
+}
+function paletteFromCSS(base) {
+  // Read REAL colors from the original theme stylesheet; zero hardcoded palettes.
+  // Save current custom inline overrides to avoid resetting user's saved colors.
+  const root=document.documentElement;
+  const oldTheme=root.dataset.theme;
+  const oldActive=root.classList.contains('theme-custom-active');
+  const saved=themeKeys.map(key=>[key,root.style.getPropertyValue('--'+key)]);
+  clearThemeOverrides();
+  root.dataset.theme=base;
+  root.classList.remove('theme-custom-active');
+  const style=getComputedStyle(root);
+  const colors={};
+  for(const key of themeKeys) {
+    let v=validColor(style.getPropertyValue('--'+key));
+    if(key==='primary' && !v) v=validColor(style.getPropertyValue('--accent'));
+    if((key==='header-bg'||key==='sidebar-bg') && !v) v=validColor(style.getPropertyValue('--panel'));
+    if(!v) throw Error('Nem olvasható a sablon színe: '+key);
+    colors[key]=v;
+  }
+  root.dataset.theme=oldTheme;
+  root.classList.toggle('theme-custom-active',oldActive);
+  for(const [key,value] of saved) if(value) root.style.setProperty('--'+key,value);
+  return colors;
+}
+function previewDraft() {
+  if(!themeDraft || !$('themeLivePreview').checked)return;
+  const root=document.documentElement;
+  clearThemeOverrides();
+  root.dataset.theme=themeDraft.base;
+  root.classList.add('theme-custom-active');
+  for(const key of themeKeys)root.style.setProperty('--'+key,themeDraft.palette[key]);
+}
+function hexToLuminance(hex){const rgb=[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)/255).map(v=>v<=0.04045?v/12.92:Math.pow((v+0.055)/1.055,2.4));return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722;}
+function contrastRatio(a,b){const x=hexToLuminance(a),y=hexToLuminance(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);}
+function updateContrast(){
+  const n=$('themeContrast');if(!n || !themeDraft)return;
+  const c=themeDraft.palette;
+  const pairs=[['Főszöveg / oldal',c.text,c.bg],['Főszöveg / kártya',c.text,c.bubble],['Elsődleges gomb',c['primary-text'],c.primary],['Állapotcímke',c['pill-text'],c.control],['Aktív menü',c['selected-text'],c.selected]];
+  const fails=pairs.filter(([,a,b])=>contrastRatio(a,b)<4.5);
+  n.classList.toggle('has-warning',fails.length>0);
+  n.textContent=fails.length?'⚠ Gyenge kontraszt: '+fails.map(([label])=>label).join(', ')+'. Az olvashatóság miatt érdemes módosítani.':'✓ A fő szöveg–háttér színpárok legalább 4,5:1 kontrasztúak.';
+}
+function paintThemeFields(){
+  const target=$('themeFields');target.replaceChildren();
+  let group=null,grid=null;
+  for(const field of themeFields){
+    if(group!==field.group){
+      group=field.group;
+      const section=document.createElement('section');section.className='theme-editor-group';
+      const title=document.createElement('h3');title.textContent=group;section.append(title);
+      grid=document.createElement('div');grid.className='theme-editor-grid';section.append(grid);target.append(section);
+    }
+    const card=document.createElement('div');card.className='theme-editor-card';
+    const label=document.createElement('label');label.textContent=field.label;label.htmlFor='themeHex-'+field.key;
+    const row=document.createElement('div');row.className='theme-editor-color-row';
+    const picker=document.createElement('input');picker.type='color';picker.value=themeDraft.palette[field.key];picker.setAttribute('aria-label',field.label+' színválasztó');
+    const hex=document.createElement('input');hex.type='text';hex.id='themeHex-'+field.key;hex.maxLength=7;hex.spellcheck=false;hex.value=themeDraft.palette[field.key];hex.setAttribute('aria-label',field.label+' HEX');
+    const reset=document.createElement('button');reset.type='button';reset.className='theme-editor-field-reset';reset.textContent='↺';reset.title=field.label+' – sablonérték visszaállítása';reset.setAttribute('aria-label',reset.title);
+    const warning=document.createElement('small');warning.className='theme-editor-field-error';warning.hidden=true;warning.textContent='Hibás HEX-kód (#RRGGBB).';
+    const update=(value)=>{
+      const good=validColor(value);
+      hex.classList.toggle('invalid',!good);warning.hidden=Boolean(good);
+      if(!good){updateEditorSaveState();return;}
+      themeDraft.palette[field.key]=good;hex.value=good;picker.value=good;
+      previewDraft();updateContrast();updateEditorSaveState();
+    };
+    picker.addEventListener('input',()=>update(picker.value));
+    hex.addEventListener('change',()=>update(hex.value));
+    hex.addEventListener('input',()=>{const good=validColor(hex.value);hex.classList.toggle('invalid',!good);warning.hidden=Boolean(good);updateEditorSaveState();});
+    reset.addEventListener('click',()=>update(themeDraft.origin[field.key]));
+    row.append(picker,hex,reset);card.append(label,row,warning);grid.append(card);
+  }
+}
+function updateEditorSaveState(){
+  const invalid=Array.from($('themeFields').querySelectorAll('input[type=text]')).some(el=>!validColor(el.value));
+  $('themeSave').disabled=invalid;
+  $('themeSave').title=invalid?'Javítsd ki a hibás HEX-értékeket':'';
+}
+function updateThemeSummary(){
+  if(!$('themeSummary'))return;
+  const name=themeCommitted.mode==='custom'?'Egyedi · '+($('theme').querySelector('option[value="'+themeCommitted.base+'"]')?.textContent||themeCommitted.base):$('theme').querySelector('option[value="'+themeCommitted.base+'"]')?.textContent||themeCommitted.base;
+  $('themeSummary').textContent='11 sablon · '+themeFields.length+' szín · '+name;
+}
+function showThemeEditor(){
+  if(themeDraft)return;
+  themePreviouslyFocused=document.activeElement;
+  const base=themeCommitted.base;
+  const origin=paletteFromCSS(base);
+  themeDraft={base,origin,palette:themeCommitted.mode==='custom'?{...themeCommitted.palette}:{...origin}};
+  paintThemeFields();
+  $('themeLivePreview').checked=true;
+  $('themeEditor').hidden=false;$('themeBackdrop').hidden=false;
+  document.body.classList.add('theme-editor-open');
+  updateContrast();updateEditorSaveState();
+  $('themeCancel').focus();
+}
+function closeThemeEditor(){
+  $('themeEditor').hidden=true;$('themeBackdrop').hidden=true;
+  document.body.classList.remove('theme-editor-open');
+  themeDraft=null;
+  applyTheme(themeCommitted);
+  if(themePreviouslyFocused?.isConnected)themePreviouslyFocused.focus();
+}
+function updateThemeFieldFromCards(){
+  const next={...themeDraft.palette};
+  for(const field of themeFields){
+    const value=validColor($('themeHex-'+field.key).value);
+    if(!value)return null;
+    next[field.key]=value;
+  }
+  return next;
+}
+function saveThemeEditor(){
+  const colors=updateThemeFieldFromCards();
+  if(!colors)return;
+  themeCommitted={mode:'custom',base:themeDraft.base,palette:colors};
+  storeCommittedTheme();
+  $('themeEditor').hidden=true;$('themeBackdrop').hidden=true;
+  document.body.classList.remove('theme-editor-open');
+  themeDraft=null;
+  applyTheme(themeCommitted);
+  if(themePreviouslyFocused?.isConnected)themePreviouslyFocused.focus();
+}
+function resetThemeDraft(){
+  if(!themeDraft)return;
+  themeDraft.palette={...themeDraft.origin};paintThemeFields();
+  previewDraft();updateContrast();updateEditorSaveState();
+}
+function selectTheme(value){
+  if(value==='custom'){
+    if(themeCommitted.mode==='custom'){applyTheme(themeCommitted);return;}
+    const saved=readStoredCustom();
+    if(saved){themeCommitted=saved;storeCommittedTheme();applyTheme(themeCommitted);return;}
+    $('theme').value=themeCommitted.base;showThemeEditor();return;
+  }
+  const name=themeNames.has(value)?value:'light';
+  if(themeDraft)closeThemeEditor();
+  themeCommitted={mode:'preset',base:name};storeCommittedTheme();applyTheme(themeCommitted);
+}
+themeCommitted=readSavedTheme();
+applyTheme(themeCommitted);
+$('theme').addEventListener('change',e=>selectTheme(e.target.value));
+$('themeCustomizeToggle').addEventListener('click',showThemeEditor);
+$('themeCancel').addEventListener('click',closeThemeEditor);
+$('themeEditorClose').addEventListener('click',closeThemeEditor);
+$('themeBackdrop').addEventListener('click',closeThemeEditor);
+$('themeSave').addEventListener('click',saveThemeEditor);
+$('themeReset').addEventListener('click',resetThemeDraft);
+$('themeLivePreview').addEventListener('change',()=>{if(themeDraft){if($('themeLivePreview').checked)previewDraft();else applyTheme(themeCommitted);}});
+$('themeEditor').addEventListener('keydown',e=>{
+  if(e.key==='Escape'){e.preventDefault();closeThemeEditor();return;}
+  if(e.key!=='Tab')return;
+  const focusable=[...$('themeEditor').querySelectorAll('button:not([disabled]),input:not([disabled])')].filter(x=>x.offsetParent!==null);
+  if(!focusable.length)return;
+  const first=focusable[0],last=focusable[focusable.length-1];
+  if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
+  else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
+});
+
 const labels={queued:'Feldolgozásra vár',handed_off:'Átadás folyamatban',seen:'Béla feldolgozza',answered:'Válaszolt',unknown:'Bizonytalan – megállítva',failed_unverified:'Sikertelen – nincs újrapróbálás',legacy_75_failed_unverified:'Archiválva – nem indul újra',cancelled_too_long:'Túl hosszú, nem lett elküldve',cancelled_by_user:'Visszavonva – nem lett elküldve',closed:'Tulajdonos lezárta – nincs újraküldés'};
 const workLabels={waiting:'vár',running:'folyamatban',completed:'kész',completed_no_text:'kész, szöveges válasz nincs',uncertain:'sikertelen / nem indul újra'};
 const telegramLabels={waiting:'vár',delivered:'kézbesítve',partial:'részleges',blocked_by_gate:'kapu tiltja',uncertain:'bizonytalan'};
@@ -117,9 +371,14 @@ galleryDialog.addEventListener('click',e=>{if(e.target===galleryDialog)galleryDi
 galleryDialog.addEventListener('close',()=>{$('galleryImage').removeAttribute('src');const v=$('galleryVideo');v.pause();v.removeAttribute('src');v.load();galleryItems=[];});
 function render(force=false){
  if(!latest)return;updateCapacityHint();const jobs=latest.jobs||[],entries=latest.entries||[]; $('galleryOpen').disabled=!latestPhotos().length;$('videoOpen').disabled=!latestVideos().length;
- $('modeHint').textContent=(latest.automatic?'Feldolgozás engedélyezve · a Küldés sorba állítja a kérést.':'Feldolgozás szünetel · új kérés nem küldhető.')+
- (latest.sync_enabled?' Telegram-szinkron: bekapcsolva; a visszaigazolt kézbesítést külön jelöljük.':
- ' Telegram-szinkron: szünetel; a nem igazolt küldéseket nem ismételjük automatikusan.');
+ const quarantined=Math.max(0,Number(latest.sync_quarantined)||0);
+ const retryAt=Number(latest.sync_retry_at)||0;
+ const recovering=latest.sync_enabled&&latest.sync_recovery_state==='recovering';
+ const mirrorLabel=!latest.sync_enabled?'⛔ Telegram-tükrözés letiltva – beavatkozás szükséges.':
+  recovering?'⚠️ Telegram-kapcsolati hiba – automatikus helyreállítás. '+(retryAt>Date.now()/1000?'Következő ellenőrzés: '+timeFormat.format(new Date(retryAt*1000))+'. ':''):
+  quarantined?'⚠️ Telegram-tükrözés működik, de '+quarantined+' esemény kézbesítése nem igazolt / érvénytelen. Kézi ellenőrzés szükséges.':
+  'Telegram-tükrözés aktív – igazolt kézbesítések jelölve.';
+ $('modeHint').textContent=(latest.automatic?'Feldolgozás engedélyezve · a Küldés sorba állítja a kérést. ':'Feldolgozás szünetel · új kérés nem küldhető. ')+mirrorLabel;
  // Distinguish historical manually held jobs from actionable queued work.
  // Never alter the backend queue limit: held rows still count towards capacity.
  const waiting=Math.max(jobs.filter(j=>j.state==='queued').length,Number.isInteger(latest.queue?.waiting)?latest.queue.waiting:0);
